@@ -1,21 +1,11 @@
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
 
+from app.api.dependencies import get_tmdb_client
 from app.clients.tmdb import TMDBClient
-from app.core.config import Settings, get_settings
 from app.models.media import MediaSearchResult
 
 router = APIRouter(prefix="/api/v1", tags=["search"])
-
-
-def get_tmdb_client(settings: Settings = Depends(get_settings)) -> TMDBClient:
-    try:
-        return TMDBClient(settings)
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=500,
-            detail="TMDB credentials are not configured.",
-        ) from exc
 
 
 @router.get("/search", response_model=list[MediaSearchResult])
