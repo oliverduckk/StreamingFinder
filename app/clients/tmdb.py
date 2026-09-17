@@ -21,6 +21,7 @@ class TMDBClient:
         if settings.tmdb_read_access_token is None:
             raise ValueError("TMDB read access token is not configured.")
         self.token = settings.tmdb_read_access_token.get_secret_value()
+        self._country_names: dict[str, str] | None = None
 
     @property
     def headers(self) -> dict[str, str]:
@@ -80,28 +81,31 @@ class TMDBClient:
             headers=self.headers,
             timeout=10.0,
         ) as client:
-            details_response, providers_response, countries_response = await asyncio.gather(
+            details_response, providers_response = await asyncio.gather(
                 client.get(
                     f"/{media_type}/{tmdb_id}",
                     params={"language": "en-US"},
                 ),
                 client.get(f"/{media_type}/{tmdb_id}/watch/providers"),
-                client.get(
-                    "/configuration/countries",
-                    params={"language": "en-US"},
-                ),
             )
 
-        details_response.raise_for_status()
-        providers_response.raise_for_status()
-        countries_response.raise_for_status()
+            details_response.raise_for_status()
+            providers_response.raise_for_status()
+
+            if self._country_names is None:
+                countries_response = await client.get(
+                    "/configuration/countries",
+                    params={"language": "en-US"},
+                )
+                countries_response.raise_for_status()
+                self._country_names = build_country_name_map(countries_response.json())
 
         details = details_response.json()
         title, year = extract_title_and_year(media_type, details)
         if not title:
             title = f"TMDB {media_type} {tmdb_id}"
 
-        country_names = build_country_name_map(countries_response.json())
+        country_names = self._country_names or {}
         providers = group_subscription_providers(
             providers_response.json().get("results", {}),
             service_keys=service_keys,
