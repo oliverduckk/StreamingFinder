@@ -1,9 +1,10 @@
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Path, Query
 
-from app.api.dependencies import get_tmdb_client
+from app.api.dependencies import get_preferences_repository, get_tmdb_client
 from app.clients.tmdb import TMDBClient
 from app.models.media import MediaAvailability, MediaType
+from app.repositories.preferences import StreamingPreferencesRepository
 from app.services.streaming_services import (
     parse_requested_service_keys,
     validate_service_keys,
@@ -26,10 +27,24 @@ async def get_availability(
             "comma-separated list, e.g. netflix,prime_video."
         ),
     ),
+    my_services: bool = Query(
+        default=False,
+        description="Use the locally saved My Streaming Services preferences.",
+    ),
     tmdb: TMDBClient = Depends(get_tmdb_client),
+    preferences: StreamingPreferencesRepository = Depends(get_preferences_repository),
 ) -> MediaAvailability:
+    if my_services and services:
+        raise HTTPException(
+            status_code=400,
+            detail="Use either services or my_services, not both.",
+        )
+
     try:
-        service_keys = validate_service_keys(parse_requested_service_keys(services))
+        if my_services:
+            service_keys = set(preferences.get_enabled_services())
+        else:
+            service_keys = validate_service_keys(parse_requested_service_keys(services))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

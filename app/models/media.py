@@ -32,3 +32,8 @@ class MediaAvailability(BaseModel):
 class StreamingServiceOption(BaseModel):
     key: str
     name: str
+
+
+class StreamingServicePreferences(BaseModel):
+    services: list[str]
+

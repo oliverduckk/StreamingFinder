@@ -7,5 +7,7 @@ __pycache__/
 .vscode/
 .idea/
 .DS_Store
-
 *.egg-info/
+data/*.db
+data/*.db-shm
+data/*.db-wal

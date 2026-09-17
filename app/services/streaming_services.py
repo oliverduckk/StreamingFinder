@@ -132,3 +132,13 @@ def validate_service_keys(service_keys: set[str] | None) -> set[str] | None:
         raise ValueError(f"Unknown streaming service key(s): {', '.join(unknown)}")
 
     return service_keys
+
+
+def order_service_keys(service_keys: set[str]) -> list[str]:
+    """Return service keys in the stable catalogue order used by the UI."""
+    return [
+        service.key
+        for service in STREAMING_SERVICES
+        if service.key in service_keys
+    ]
+

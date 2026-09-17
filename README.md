@@ -1,60 +1,71 @@
-Streaming Finder
+# Streaming Finder
 
 A desktop-focused media project with a FastAPI backend for finding where movies and TV shows are available to stream across different countries.
 
 The API is designed to be consumed by the future StreamingFinder desktop interface and by Project Mairon.
 
-Current milestone: v0.2.1
+## Current milestone: v0.3.0
 
-Search movies and TV shows through TMDB.
+- Search movies and TV shows through TMDB.
+- Retrieve subscription (`flatrate`) streaming availability by country.
+- Normalise duplicate TMDB provider records into stable StreamingFinder service keys.
+- Filter availability to selected services such as Netflix or Amazon Prime Video.
+- Persist **My Streaming Services** locally in SQLite.
+- Let availability searches automatically use the saved subscription list.
 
-Retrieve subscription (flatrate) streaming availability by country.
+## Setup
 
-Normalise duplicate TMDB provider records into stable StreamingFinder service keys.
+1. Create and activate a virtual environment.
+2. Install the project with development dependencies:
+   `pip install -e ".[dev]"`
+3. Copy `.env.example` to `.env`.
+4. Add your TMDB API Read Access Token to `.env`.
+5. Run the API:
+   `uvicorn app.main:app --reload`
+6. Open `http://127.0.0.1:8000/docs`.
 
-Filter availability to selected services such as Netflix or Amazon Prime Video.
+SQLite is part of Python, so v0.3 does not add another database dependency. The local database is created automatically at `data/streaming_finder.db` and is ignored by Git.
 
-Expose a service catalogue for the future My Streaming Services settings UI.
+## Current endpoints
 
-Setup
+- `GET /health`
+- `GET /api/v1/search?query=interstellar`
+- `GET /api/v1/services`
+- `GET /api/v1/preferences/services`
+- `PUT /api/v1/preferences/services`
+- `GET /api/v1/availability/movie/157336`
+- `GET /api/v1/availability/movie/157336?services=netflix,prime_video`
+- `GET /api/v1/availability/movie/157336?my_services=true`
 
-Create a virtual environment.
+### Save My Streaming Services
 
-Install the project with development dependencies:
-pip install -e "[dev]"
+Send JSON to `PUT /api/v1/preferences/services`:
 
-Copy .env.example to .env.
+```json
+{
+  "services": [
+    "netflix",
+    "prime_video",
+    "disney_plus"
+  ]
+}
+```
 
-Add your TMDB API Read Access Token to .env.
+Then use `my_services=true` on an availability request to filter using the saved subscription list.
 
-Run the API:
-uvicorn app.main:app --reload
+Explicit `services=...` and `my_services=true` cannot be used together.
 
-Open http://127.0.0.1:8000/docs.
+## Stable service keys
 
-Current endpoints
+The application uses its own stable keys rather than storing TMDB provider IDs directly. For example, multiple TMDB records such as `Amazon Prime Video` and `Amazon Prime Video with Ads` can map to the single key `prime_video`.
 
-GET /health
+This keeps desktop preferences, the local database and future Mairon tools independent from TMDB's internal provider IDs.
 
-GET /api/v1/search?query=interstellar
+## Local data
 
-GET /api/v1/services
+Personal data such as selected subscriptions is stored locally and is not committed to the public repository. The same local database can later grow to hold watch history, ratings, favourites and recommendation data.
 
-GET /api/v1/availability/movie/157336
-
-GET /api/v1/availability/movie/157336?services=netflix&services=prime_video
-
-GET /api/v1/availability/movie/157336?services=netflix,prime_video
-
-If no services filter is supplied, StreamingFinder returns all subscription providers reported by TMDB. If a filter is supplied, only the selected canonical services are returned.
-
-Stable service keys
-
-The application uses its own stable keys rather than storing TMDB provider IDs directly. For example, multiple TMDB records such as Amazon Prime Video and Amazon Prime Video with Ads can map to the single key prime_video.
-
-This keeps desktop preferences and future Mairon tools independent from TMDB's internal provider IDs.
-
-Attribution
+## Attribution
 
 This product uses the TMDB API but is not endorsed or certified by TMDB.
 
