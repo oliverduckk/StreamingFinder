@@ -1,9 +1,12 @@
+import asyncio
 from collections import defaultdict
+from typing import Any
 
 import httpx
 
 from app.core.config import Settings
 from app.models.media import (
+    CountryAvailability,
     MediaAvailability,
     MediaSearchResult,
     MediaType,
@@ -49,17 +52,7 @@ class TMDBClient:
             if media_type not in {"movie", "tv"}:
                 continue
 
-            title = item.get("title") if media_type == "movie" else item.get("name")
-            date_value = (
-                item.get("release_date")
-                if media_type == "movie"
-                else item.get("first_air_date")
-            )
-
-            year = None
-            if date_value and len(date_value) >= 4 and date_value[:4].isdigit():
-                year = int(date_value[:4])
-
+            title, year = extract_title_and_year(media_type, item)
             if not title:
                 continue
 
@@ -87,24 +80,80 @@ class TMDBClient:
             headers=self.headers,
             timeout=10.0,
         ) as client:
-            response = await client.get(f"/{media_type}/{tmdb_id}/watch/providers")
-            response.raise_for_status()
+            details_response, providers_response, countries_response = await asyncio.gather(
+                client.get(
+                    f"/{media_type}/{tmdb_id}",
+                    params={"language": "en-US"},
+                ),
+                client.get(f"/{media_type}/{tmdb_id}/watch/providers"),
+                client.get(
+                    "/configuration/countries",
+                    params={"language": "en-US"},
+                ),
+            )
 
+        details_response.raise_for_status()
+        providers_response.raise_for_status()
+        countries_response.raise_for_status()
+
+        details = details_response.json()
+        title, year = extract_title_and_year(media_type, details)
+        if not title:
+            title = f"TMDB {media_type} {tmdb_id}"
+
+        country_names = build_country_name_map(countries_response.json())
         providers = group_subscription_providers(
-            response.json().get("results", {}),
+            providers_response.json().get("results", {}),
             service_keys=service_keys,
+            country_names=country_names,
         )
 
         return MediaAvailability(
             tmdb_id=tmdb_id,
             media_type=media_type,
+            title=title,
+            year=year,
+            overview=details.get("overview") or None,
+            poster_path=details.get("poster_path"),
             providers=providers,
         )
+
+
+def extract_title_and_year(
+    media_type: MediaType,
+    payload: dict[str, Any],
+) -> tuple[str | None, int | None]:
+    if media_type == "movie":
+        title = payload.get("title")
+        date_value = payload.get("release_date")
+    else:
+        title = payload.get("name")
+        date_value = payload.get("first_air_date")
+
+    year = None
+    if isinstance(date_value, str) and len(date_value) >= 4 and date_value[:4].isdigit():
+        year = int(date_value[:4])
+
+    return title, year
+
+
+def build_country_name_map(countries: list[dict[str, Any]]) -> dict[str, str]:
+    """Map TMDB ISO country codes to human-readable English names."""
+    country_names: dict[str, str] = {}
+
+    for country in countries:
+        code = country.get("iso_3166_1")
+        name = country.get("english_name") or country.get("native_name")
+        if isinstance(code, str) and code and isinstance(name, str) and name:
+            country_names[code] = name
+
+    return country_names
 
 
 def group_subscription_providers(
     regional_results: dict[str, dict],
     service_keys: set[str] | None = None,
+    country_names: dict[str, str] | None = None,
 ) -> list[StreamingServiceAvailability]:
     """Convert TMDB country-first flatrate data into service-first availability.
 
@@ -112,6 +161,7 @@ def group_subscription_providers(
     collapse into one result. Unknown providers are preserved when no service
     filter is requested.
     """
+    country_names = country_names or {}
     group_countries: dict[str, set[str]] = defaultdict(set)
     group_provider_ids: dict[str, set[int]] = defaultdict(set)
     group_metadata: dict[str, tuple[str, str | None]] = {}
@@ -134,8 +184,6 @@ def group_subscription_providers(
                 group_key = known_service.key
                 display_name = known_service.name
             else:
-                # Preserve unrecognised TMDB services for "search everything".
-                # The TMDB provider ID keeps unrelated services distinct.
                 group_key = f"tmdb_{provider_id}"
                 display_name = provider_name
 
@@ -157,7 +205,16 @@ def group_subscription_providers(
             service_name=group_metadata[group_key][0],
             provider_ids=sorted(group_provider_ids[group_key]),
             logo_path=group_metadata[group_key][1],
-            countries=sorted(countries),
+            countries=sorted(
+                (
+                    CountryAvailability(
+                        code=country_code,
+                        name=country_names.get(country_code, country_code),
+                    )
+                    for country_code in countries
+                ),
+                key=lambda country: (country.name.casefold(), country.code),
+            ),
         )
         for group_key, countries in group_countries.items()
     ]

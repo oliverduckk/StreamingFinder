@@ -15,17 +15,26 @@ class MediaSearchResult(BaseModel):
     poster_path: str | None = None
 
 
+class CountryAvailability(BaseModel):
+    code: str
+    name: str
+
+
 class StreamingServiceAvailability(BaseModel):
     service_key: str
     service_name: str
     provider_ids: list[int]
     logo_path: str | None = None
-    countries: list[str]
+    countries: list[CountryAvailability]
 
 
 class MediaAvailability(BaseModel):
     tmdb_id: int
     media_type: MediaType
+    title: str
+    year: int | None = None
+    overview: str | None = None
+    poster_path: str | None = None
     providers: list[StreamingServiceAvailability]
 
 
@@ -36,4 +45,3 @@ class StreamingServiceOption(BaseModel):
 
 class StreamingServicePreferences(BaseModel):
     services: list[str]
-

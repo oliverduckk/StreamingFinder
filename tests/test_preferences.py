@@ -70,6 +70,8 @@ class FakeTMDBClient:
         return MediaAvailability(
             tmdb_id=tmdb_id,
             media_type=media_type,
+            title="Interstellar",
+            year=2014,
             providers=[],
         )
 
