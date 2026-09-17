@@ -25,3 +25,22 @@ class SQLiteDatabase:
                 )
                 """
             )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS media_library (
+                    media_type TEXT NOT NULL CHECK (media_type IN ('movie', 'tv')),
+                    tmdb_id INTEGER NOT NULL,
+                    title TEXT NOT NULL,
+                    year INTEGER,
+                    overview TEXT,
+                    poster_path TEXT,
+                    status TEXT NOT NULL CHECK (
+                        status IN ('watchlist', 'watching', 'watched', 'dropped')
+                    ),
+                    favourite INTEGER NOT NULL DEFAULT 0 CHECK (favourite IN (0, 1)),
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (media_type, tmdb_id)
+                )
+                """
+            )

@@ -4,6 +4,7 @@ from pydantic import BaseModel
 
 
 MediaType = Literal["movie", "tv"]
+LibraryStatus = Literal["watchlist", "watching", "watched", "dropped"]
 
 
 class MediaSearchResult(BaseModel):
@@ -45,3 +46,25 @@ class StreamingServiceOption(BaseModel):
 
 class StreamingServicePreferences(BaseModel):
     services: list[str]
+
+
+class MediaLibraryEntry(BaseModel):
+    media_type: MediaType
+    tmdb_id: int
+    title: str
+    year: int | None = None
+    overview: str | None = None
+    poster_path: str | None = None
+    status: LibraryStatus
+    favourite: bool = False
+    created_at: str
+    updated_at: str
+
+
+class MediaLibrarySaveRequest(BaseModel):
+    title: str
+    year: int | None = None
+    overview: str | None = None
+    poster_path: str | None = None
+    status: LibraryStatus
+    favourite: bool = False

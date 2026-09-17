@@ -3,6 +3,7 @@ from fastapi import Depends, HTTPException
 from app.clients.tmdb import TMDBClient
 from app.core.config import Settings, get_settings
 from app.db.database import SQLiteDatabase
+from app.repositories.library import MediaLibraryRepository
 from app.repositories.preferences import StreamingPreferencesRepository
 
 
@@ -20,3 +21,9 @@ def get_preferences_repository(
     settings: Settings = Depends(get_settings),
 ) -> StreamingPreferencesRepository:
     return StreamingPreferencesRepository(SQLiteDatabase(settings.database_path))
+
+
+def get_library_repository(
+    settings: Settings = Depends(get_settings),
+) -> MediaLibraryRepository:
+    return MediaLibraryRepository(SQLiteDatabase(settings.database_path))

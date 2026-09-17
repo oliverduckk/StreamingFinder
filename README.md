@@ -1,65 +1,26 @@
 # StreamingFinder
 
-StreamingFinder is a local-first desktop app and API for finding where movies and TV shows are available to stream around the world. It uses TMDB metadata and watch-provider data, normalises provider variants, saves local subscription preferences, and filters availability to the services you actually use.
+StreamingFinder is a local desktop application and API for finding where movies and TV shows are available to stream by service and country.
 
-> This product uses the TMDB API but is not endorsed or certified by TMDB.
->
-> Streaming availability data is provided through TMDB's partnership with JustWatch. JustWatch attribution is required when this data is displayed.
+## V0.7
 
-## Current capabilities
+V0.7 adds the first personal media-library foundation:
 
-- Native PySide6 desktop interface with a dark purple-accented theme.
-- Search movies and TV shows through TMDB.
-- Display posters, title metadata, overview text, and search results.
-- Retrieve subscription (`flatrate`) streaming availability by country.
-- Canonicalise duplicate provider variants into stable services such as Netflix and Amazon Prime Video.
-- Save "My Streaming Services" locally in SQLite.
-- Automatically refresh availability when selected subscriptions change.
-- Display streaming provider logos.
-- Display countries as compact expandable chips instead of long text blocks.
-- Show a non-blocking loading indicator while network requests run.
-- Return human-readable country names while preserving ISO country codes.
-- Expose the same backend through FastAPI for future Mairon integration.
+- persistent SQLite movie/TV library
+- Watchlist, Watching, Watched and Dropped statuses
+- Favourite toggle
+- automatic persistence from the desktop title panel
+- REST endpoints under `/api/v1/library` for future Mairon integration
+- library metadata stores TMDB ID, media type, title, year, overview and poster path
 
-## Development setup
+The database remains local in `data/streaming_finder.db` and is not committed to Git.
+
+## Run
 
 ```powershell
-python -m venv .venv
-Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
-.\.venv\Scripts\Activate.ps1
 python -m pip install -e ".[dev]"
-```
-
-Copy `.env.example` to `.env` and add your TMDB API Read Access Token:
-
-```env
-TMDB_READ_ACCESS_TOKEN=replace_me
-```
-
-Launch the desktop app:
-
-```powershell
+pytest
 python -m app.desktop
 ```
 
-or:
-
-```powershell
-streaming-finder
-```
-
-Run tests:
-
-```powershell
-pytest
-```
-
-Run the API independently when needed:
-
-```powershell
-uvicorn app.main:app --reload
-```
-
-## Direction
-
-The next major area is the personal media library: watched status, watchlist, favourites, a detailed rating system, viewing history, recommendation data, and integration with Project Mairon.
+TMDB metadata is used under TMDB's API terms. Streaming availability data is supplied by JustWatch via TMDB and requires appropriate attribution in the UI.

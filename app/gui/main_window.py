@@ -5,6 +5,7 @@ from PySide6.QtGui import QIcon, QPixmap
 from PySide6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest
 from PySide6.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QFrame,
     QGridLayout,
     QHBoxLayout,
@@ -32,7 +33,13 @@ from app.gui.helpers import (
     split_country_preview,
 )
 from app.gui.workers import AsyncWorker
-from app.models.media import MediaAvailability, MediaSearchResult, StreamingServiceAvailability
+from app.models.media import (
+    LibraryStatus,
+    MediaAvailability,
+    MediaSearchResult,
+    StreamingServiceAvailability,
+)
+from app.repositories.library import MediaLibraryRepository
 from app.repositories.preferences import StreamingPreferencesRepository
 from app.services.streaming_services import STREAMING_SERVICES
 
@@ -42,9 +49,9 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.settings = get_settings()
         self.tmdb = TMDBClient(self.settings)
-        self.preferences = StreamingPreferencesRepository(
-            SQLiteDatabase(self.settings.database_path)
-        )
+        database = SQLiteDatabase(self.settings.database_path)
+        self.preferences = StreamingPreferencesRepository(database)
+        self.library = MediaLibraryRepository(database)
         self.thread_pool = QThreadPool.globalInstance()
         self.network = QNetworkAccessManager(self)
         self.current_media: MediaSearchResult | None = None
@@ -192,6 +199,32 @@ class MainWindow(QMainWindow):
         )
         media_text.addWidget(self.media_title_label)
         media_text.addWidget(self.media_meta_label)
+
+        library_row = QHBoxLayout()
+        library_row.setSpacing(10)
+        library_label = QLabel("Library")
+        library_label.setObjectName("muted")
+        self.library_status_combo = QComboBox()
+        self.library_status_combo.setObjectName("libraryStatus")
+        self.library_status_combo.addItem("Not in library", "")
+        self.library_status_combo.addItem("Watchlist", "watchlist")
+        self.library_status_combo.addItem("Watching", "watching")
+        self.library_status_combo.addItem("Watched", "watched")
+        self.library_status_combo.addItem("Dropped", "dropped")
+        self.library_status_combo.setEnabled(False)
+        self.library_status_combo.currentIndexChanged.connect(
+            self._on_library_status_changed
+        )
+        self.favourite_checkbox = QCheckBox("Favourite")
+        self.favourite_checkbox.setObjectName("favouriteToggle")
+        self.favourite_checkbox.setEnabled(False)
+        self.favourite_checkbox.stateChanged.connect(self._on_favourite_changed)
+        library_row.addWidget(library_label)
+        library_row.addWidget(self.library_status_combo)
+        library_row.addWidget(self.favourite_checkbox)
+        library_row.addStretch()
+        media_text.addLayout(library_row)
+
         media_text.addSpacing(4)
         media_text.addWidget(self.media_overview_label)
         media_text.addStretch()
@@ -309,7 +342,62 @@ class MainWindow(QMainWindow):
 
         self.current_media = MediaSearchResult.model_validate(payload)
         self._show_media_summary(self.current_media)
+        self._load_library_state(self.current_media)
         self._load_availability(self.current_media)
+
+    def _load_library_state(self, media: MediaSearchResult) -> None:
+        entry = self.library.get(media.media_type, media.tmdb_id)
+        status_value = entry.status if entry is not None else ""
+
+        self.library_status_combo.blockSignals(True)
+        index = self.library_status_combo.findData(status_value)
+        self.library_status_combo.setCurrentIndex(max(index, 0))
+        self.library_status_combo.setEnabled(True)
+        self.library_status_combo.blockSignals(False)
+
+        self.favourite_checkbox.blockSignals(True)
+        self.favourite_checkbox.setChecked(bool(entry and entry.favourite))
+        self.favourite_checkbox.setEnabled(entry is not None)
+        self.favourite_checkbox.blockSignals(False)
+
+    def _on_library_status_changed(self, _index: int) -> None:
+        if self.current_media is None:
+            return
+
+        raw_status = self.library_status_combo.currentData()
+        if not raw_status:
+            self.library.remove(self.current_media.media_type, self.current_media.tmdb_id)
+            self.favourite_checkbox.blockSignals(True)
+            self.favourite_checkbox.setChecked(False)
+            self.favourite_checkbox.setEnabled(False)
+            self.favourite_checkbox.blockSignals(False)
+            self.status_label.setText(f"Removed {self.current_media.title} from your library.")
+            return
+
+        status: LibraryStatus = raw_status
+        entry = self.library.upsert(self.current_media, status)
+        self.favourite_checkbox.blockSignals(True)
+        self.favourite_checkbox.setChecked(entry.favourite)
+        self.favourite_checkbox.setEnabled(True)
+        self.favourite_checkbox.blockSignals(False)
+        label = self.library_status_combo.currentText().lower()
+        self.status_label.setText(f"Saved {self.current_media.title} as {label}.")
+
+    def _on_favourite_changed(self, state: int) -> None:
+        if self.current_media is None:
+            return
+        raw_status = self.library_status_combo.currentData()
+        if not raw_status:
+            return
+
+        favourite = state == Qt.CheckState.Checked.value
+        self.library.set_favourite(
+            self.current_media.media_type,
+            self.current_media.tmdb_id,
+            favourite,
+        )
+        action = "Added to" if favourite else "Removed from"
+        self.status_label.setText(f"{action} favourites: {self.current_media.title}.")
 
     def _show_media_summary(self, media: MediaSearchResult) -> None:
         self.media_title_label.setText(media.title)

@@ -213,4 +213,35 @@ QToolTip {
     color: #f2f3f5;
     border: 1px solid #514b82;
 }
+
+/* Personal library controls */
+QComboBox#libraryStatus {
+    background-color: #1b1d25;
+    border: 1px solid #3b3f4d;
+    border-radius: 8px;
+    padding: 6px 10px;
+    min-width: 120px;
+}
+
+QComboBox#libraryStatus:focus {
+    border: 1px solid #8274f2;
+}
+
+QComboBox#libraryStatus::drop-down {
+    border: none;
+    width: 22px;
+}
+
+QComboBox QAbstractItemView {
+    background-color: #1b1d25;
+    color: #f2f3f5;
+    selection-background-color: #2b2940;
+    border: 1px solid #514b82;
+}
+
+QCheckBox#favouriteToggle:checked {
+    color: #d8d1ff;
+    font-weight: 700;
+}
+
 """
