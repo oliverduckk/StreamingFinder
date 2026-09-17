@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMainWindow,
+    QProgressBar,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -24,9 +25,14 @@ from PySide6.QtWidgets import (
 from app.clients.tmdb import TMDBClient
 from app.core.config import get_settings
 from app.db.database import SQLiteDatabase
-from app.gui.helpers import format_country_names, media_subtitle, poster_url
+from app.gui.helpers import (
+    media_subtitle,
+    poster_url,
+    provider_logo_url,
+    split_country_preview,
+)
 from app.gui.workers import AsyncWorker
-from app.models.media import MediaAvailability, MediaSearchResult
+from app.models.media import MediaAvailability, MediaSearchResult, StreamingServiceAvailability
 from app.repositories.preferences import StreamingPreferencesRepository
 from app.services.streaming_services import STREAMING_SERVICES
 
@@ -44,6 +50,7 @@ class MainWindow(QMainWindow):
         self.current_media: MediaSearchResult | None = None
         self.service_checkboxes: dict[str, QCheckBox] = {}
         self._availability_generation = 0
+        self._active_operations = 0
         self._preference_refresh_timer = QTimer(self)
         self._preference_refresh_timer.setSingleShot(True)
         self._preference_refresh_timer.setInterval(250)
@@ -119,6 +126,14 @@ class MainWindow(QMainWindow):
         self.status_label.setObjectName("status")
         root_layout.addWidget(self.status_label)
 
+        self.loading_bar = QProgressBar()
+        self.loading_bar.setObjectName("loadingBar")
+        self.loading_bar.setRange(0, 0)
+        self.loading_bar.setTextVisible(False)
+        self.loading_bar.setFixedHeight(3)
+        self.loading_bar.hide()
+        root_layout.addWidget(self.loading_bar)
+
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.setChildrenCollapsible(False)
 
@@ -154,12 +169,9 @@ class MainWindow(QMainWindow):
         media_header = QHBoxLayout()
         media_header.setSpacing(18)
         self.poster_label = QLabel("No poster")
-        self.poster_label.setObjectName("muted")
+        self.poster_label.setObjectName("posterFrame")
         self.poster_label.setFixedSize(220, 330)
         self.poster_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.poster_label.setStyleSheet(
-            "background:#20232b; border:1px solid #30343e; border-radius:10px;"
-        )
         media_header.addWidget(self.poster_label, 0, Qt.AlignmentFlag.AlignTop)
 
         media_text = QVBoxLayout()
@@ -247,12 +259,18 @@ class MainWindow(QMainWindow):
         placeholder.setFlags(Qt.ItemFlag.NoItemFlags)
         self.results_list.addItem(placeholder)
         self.status_label.setText(f'Searching TMDB for “{query}”…')
+        self._begin_loading()
 
         worker = AsyncWorker(lambda: self.tmdb.search_media(query))
         worker.signals.result.connect(self._show_search_results)
         worker.signals.error.connect(self._show_error)
-        worker.signals.finished.connect(lambda: self.search_button.setEnabled(True))
+        worker.signals.finished.connect(self._finish_search_operation)
         self.thread_pool.start(worker)
+
+    @Slot()
+    def _finish_search_operation(self) -> None:
+        self.search_button.setEnabled(True)
+        self._end_loading()
 
     def _show_search_results(self, results: object) -> None:
         media_results = list(results) if isinstance(results, list) else []
@@ -328,6 +346,7 @@ class MainWindow(QMainWindow):
         expected_id = media.tmdb_id
         self._availability_generation += 1
         generation = self._availability_generation
+        self._begin_loading()
 
         async def fetch_availability() -> tuple[int, int, MediaAvailability]:
             result = await self.tmdb.get_subscription_availability(
@@ -338,10 +357,9 @@ class MainWindow(QMainWindow):
             return expected_id, generation, result
 
         worker = AsyncWorker(fetch_availability)
-        # Connect directly to QObject methods so Qt queues cross-thread UI updates
-        # back onto the main GUI thread. Avoid Python lambdas at this boundary.
         worker.signals.result.connect(self._handle_availability_result)
         worker.signals.error.connect(self._show_availability_error)
+        worker.signals.finished.connect(self._end_loading)
         self.thread_pool.start(worker)
 
     @Slot(object)
@@ -362,7 +380,7 @@ class MainWindow(QMainWindow):
     def _show_availability_error(self, message: str) -> None:
         self._set_provider_message(
             "Could not load streaming availability. "
-            "Check the status message below for details."
+            "Check the status message above for details."
         )
         self.status_label.setText(f"Availability error: {message}")
 
@@ -395,34 +413,120 @@ class MainWindow(QMainWindow):
             return
 
         for provider in result.providers:
-            card = QFrame()
-            card.setObjectName("panel")
-            card_layout = QVBoxLayout(card)
-            card_layout.setContentsMargins(14, 12, 14, 12)
-            card_layout.setSpacing(5)
-
-            name = QLabel(provider.service_name)
-            name.setObjectName("providerName")
-            countries = QLabel(format_country_names(provider.countries))
-            countries.setWordWrap(True)
-            countries.setObjectName("muted")
-            card_layout.addWidget(name)
-            card_layout.addWidget(countries)
-            self.providers_layout.addWidget(card)
+            self.providers_layout.addWidget(self._build_provider_card(provider))
 
         self.status_label.setText(
             f"Found {len(result.providers)} selected service(s) carrying {result.title}."
         )
 
+    def _build_provider_card(self, provider: StreamingServiceAvailability) -> QFrame:
+        card = QFrame()
+        card.setObjectName("providerCard")
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(14, 12, 14, 12)
+        card_layout.setSpacing(10)
+
+        header = QHBoxLayout()
+        header.setSpacing(10)
+        logo = QLabel(provider.service_name[:1])
+        logo.setObjectName("providerLogo")
+        logo.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        logo.setFixedSize(42, 42)
+        header.addWidget(logo, 0, Qt.AlignmentFlag.AlignTop)
+
+        name_column = QVBoxLayout()
+        name_column.setSpacing(2)
+        name = QLabel(provider.service_name)
+        name.setObjectName("providerName")
+        country_count = QLabel(
+            f"{len(provider.countries)} countr{'y' if len(provider.countries) == 1 else 'ies'}"
+        )
+        country_count.setObjectName("muted")
+        name_column.addWidget(name)
+        name_column.addWidget(country_count)
+        header.addLayout(name_column)
+        header.addStretch()
+        card_layout.addLayout(header)
+
+        logo_url = provider_logo_url(provider.logo_path, "w92")
+        if logo_url:
+            self._request_image(
+                logo_url,
+                lambda pixmap, target=logo: self._set_provider_logo(target, pixmap),
+            )
+
+        preview, remainder = split_country_preview(provider.countries, limit=9)
+        country_grid = QGridLayout()
+        country_grid.setHorizontalSpacing(8)
+        country_grid.setVerticalSpacing(7)
+        country_grid.setContentsMargins(0, 0, 0, 0)
+
+        chips: list[QLabel] = []
+        for index, country in enumerate(preview + remainder):
+            chip = QLabel(country.name)
+            chip.setObjectName("countryChip")
+            chip.setToolTip(country.code)
+            chip.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            chip.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+            if index >= len(preview):
+                chip.hide()
+            country_grid.addWidget(chip, index // 3, index % 3)
+            chips.append(chip)
+
+        card_layout.addLayout(country_grid)
+
+        if remainder:
+            more_button = QPushButton(f"+ {len(remainder)} more countries")
+            more_button.setObjectName("countryMoreButton")
+            more_button.setProperty("remaining_count", len(remainder))
+            more_button.clicked.connect(
+                lambda _checked=False, hidden=chips[len(preview) :], button=more_button: (
+                    self._toggle_country_chips(hidden, button)
+                )
+            )
+            card_layout.addWidget(more_button, 0, Qt.AlignmentFlag.AlignLeft)
+
+        return card
+
+    @staticmethod
+    def _toggle_country_chips(chips: list[QLabel], button: QPushButton) -> None:
+        if not chips:
+            return
+        should_show = not chips[0].isVisible()
+        for chip in chips:
+            chip.setVisible(should_show)
+        remaining_count = int(button.property("remaining_count") or len(chips))
+        button.setText(
+            "Show fewer countries"
+            if should_show
+            else f"+ {remaining_count} more countries"
+        )
+
     def _set_provider_message(self, message: str) -> None:
         self._clear_layout(self.providers_layout)
+        frame = QFrame()
+        frame.setObjectName("emptyState")
+        frame_layout = QVBoxLayout(frame)
+        frame_layout.setContentsMargins(14, 12, 14, 12)
         label = QLabel(message)
         label.setObjectName("muted")
         label.setWordWrap(True)
-        self.providers_layout.addWidget(label)
+        frame_layout.addWidget(label)
+        self.providers_layout.addWidget(frame)
 
+    @Slot(str)
     def _show_error(self, message: str) -> None:
         self.status_label.setText(f"Error: {message}")
+
+    def _begin_loading(self) -> None:
+        self._active_operations += 1
+        self.loading_bar.show()
+
+    @Slot()
+    def _end_loading(self) -> None:
+        self._active_operations = max(0, self._active_operations - 1)
+        if self._active_operations == 0:
+            self.loading_bar.hide()
 
     def _request_image(
         self,
@@ -461,7 +565,6 @@ class MainWindow(QMainWindow):
             )
             item.setIcon(QIcon(scaled))
         except RuntimeError:
-            # The item may belong to a previous search that has already been cleared.
             return
 
     def _set_detail_poster_if_current(self, media_id: int, pixmap: QPixmap) -> None:
@@ -474,6 +577,20 @@ class MainWindow(QMainWindow):
         )
         self.poster_label.setText("")
         self.poster_label.setPixmap(scaled)
+
+    @staticmethod
+    def _set_provider_logo(label: QLabel, pixmap: QPixmap) -> None:
+        try:
+            scaled = pixmap.scaled(
+                36,
+                36,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+            label.setText("")
+            label.setPixmap(scaled)
+        except RuntimeError:
+            return
 
     @staticmethod
     def _clear_layout(layout: QVBoxLayout) -> None:

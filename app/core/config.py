@@ -6,7 +6,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     app_name: str = "Streaming Finder API"
-    app_version: str = "0.5.0"
+    app_version: str = "0.6.0"
     tmdb_base_url: str = "https://api.themoviedb.org/3"
     tmdb_read_access_token: SecretStr | None = None
     database_path: str = "data/streaming_finder.db"

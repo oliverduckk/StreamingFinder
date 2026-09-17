@@ -1,6 +1,6 @@
 [project]
 name = "streaming-finder"
-version = "0.5.0"
+version = "0.6.0"
 description = "Local desktop app and API for movie and TV streaming availability across countries."
 requires-python = ">=3.12"
 dependencies = [

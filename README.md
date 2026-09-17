@@ -1,24 +1,25 @@
 # StreamingFinder
 
-StreamingFinder is a local-first desktop application and API for finding where movies and TV shows are available to stream across countries. It uses TMDB metadata and watch-provider data, normalises streaming services, stores local subscription preferences, and is being designed for later integration with Project Mairon.
+StreamingFinder is a local-first desktop app and API for finding where movies and TV shows are available to stream around the world. It uses TMDB metadata and watch-provider data, normalises provider variants, saves local subscription preferences, and filters availability to the services you actually use.
 
 > This product uses the TMDB API but is not endorsed or certified by TMDB.
 >
-> Streaming availability data is provided through TMDB's partnership with JustWatch. JustWatch attribution is required when this data is displayed in the application.
+> Streaming availability data is provided through TMDB's partnership with JustWatch. JustWatch attribution is required when this data is displayed.
 
 ## Current capabilities
 
-- Native PySide6 desktop application.
-- Dark media-focused interface designed to sit alongside Project Mairon.
+- Native PySide6 desktop interface with a dark purple-accented theme.
 - Search movies and TV shows through TMDB.
-- Display posters, title metadata, overview, and streaming availability.
+- Display posters, title metadata, overview text, and search results.
 - Retrieve subscription (`flatrate`) streaming availability by country.
 - Canonicalise duplicate provider variants into stable services such as Netflix and Amazon Prime Video.
 - Save "My Streaming Services" locally in SQLite.
-- Change streaming subscriptions from desktop checkboxes and persist them automatically.
-- Filter availability using selected subscriptions.
+- Automatically refresh availability when selected subscriptions change.
+- Display streaming provider logos.
+- Display countries as compact expandable chips instead of long text blocks.
+- Show a non-blocking loading indicator while network requests run.
 - Return human-readable country names while preserving ISO country codes.
-- FastAPI interface remains available for future Mairon and Raspberry Pi clients.
+- Expose the same backend through FastAPI for future Mairon integration.
 
 ## Development setup
 
@@ -26,7 +27,7 @@ StreamingFinder is a local-first desktop application and API for finding where m
 python -m venv .venv
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 .\.venv\Scripts\Activate.ps1
-pip install -e ".[dev]"
+python -m pip install -e ".[dev]"
 ```
 
 Copy `.env.example` to `.env` and add your TMDB API Read Access Token:
@@ -35,61 +36,30 @@ Copy `.env.example` to `.env` and add your TMDB API Read Access Token:
 TMDB_READ_ACCESS_TOKEN=replace_me
 ```
 
-## Run the desktop app
-
-The desktop app talks directly to the shared StreamingFinder backend code, so Uvicorn does not need to be running for normal desktop use.
+Launch the desktop app:
 
 ```powershell
 python -m app.desktop
 ```
 
-After installation you can also run:
+or:
 
 ```powershell
 streaming-finder
 ```
 
-## Run the API
-
-The API remains available as a separate interface for future Mairon/Pi integration:
-
-```powershell
-uvicorn app.main:app --reload
-```
-
-## Run tests
+Run tests:
 
 ```powershell
 pytest
 ```
 
-## Useful API endpoints
+Run the API independently when needed:
 
-Search:
-
-```text
-GET /api/v1/search?query=Interstellar
-```
-
-Available canonical services:
-
-```text
-GET /api/v1/services
-```
-
-Saved services:
-
-```text
-GET /api/v1/preferences/services
-PUT /api/v1/preferences/services
-```
-
-Availability using saved services:
-
-```text
-GET /api/v1/availability/movie/157336?my_services=true
+```powershell
+uvicorn app.main:app --reload
 ```
 
 ## Direction
 
-The next major areas are the personal media library, custom rating system, watch history/watchlist, personalised recommendations, and Project Mairon integration.
+The next major area is the personal media library: watched status, watchlist, favourites, a detailed rating system, viewing history, recommendation data, and integration with Project Mairon.
