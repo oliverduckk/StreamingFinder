@@ -1,19 +1,40 @@
 # StreamingFinder
 
-StreamingFinder is a local desktop application and API for finding where movies and TV shows are available to stream by service and country.
+StreamingFinder is a local desktop application and API for finding where movies and TV shows are available to stream by service and country, while building a personal media library and structured rating history.
 
-## V0.7
+## V0.9
 
-V0.7 adds the first personal media-library foundation:
+V0.9 adds the first dedicated Library screen to the desktop application.
 
-- persistent SQLite movie/TV library
-- Watchlist, Watching, Watched and Dropped statuses
-- Favourite toggle
-- automatic persistence from the desktop title panel
-- REST endpoints under `/api/v1/library` for future Mairon integration
-- library metadata stores TMDB ID, media type, title, year, overview and poster path
+The top-level desktop navigation now contains **Search** and **Library**. The Library view reads directly from the local SQLite database and displays saved movies and TV series as poster cards with their library status, favourite state, and personal `/100` rating when available.
 
-The database remains local in `data/streaming_finder.db` and is not committed to Git.
+Library browsing supports:
+
+- text filtering by title
+- status filtering: Watchlist, Watching, Watched, Dropped
+- media filtering: Movies or TV series
+- favourites-only filtering
+- sorting by recently updated, highest rated, title A-Z, or release year
+- opening any saved title back into the full details/streaming-availability view
+
+The library remains fully local in `data/streaming_finder.db`; personal library and rating data are not committed to Git.
+
+## Rating system
+
+Each movie or TV series can be scored across ten categories, each out of 10, for an overall score out of 100:
+
+1. Story
+2. Characters
+3. Dialogue
+4. Visuals
+5. Soundtrack
+6. Worldbuilding
+7. Direction
+8. Pacing
+9. Emotional Impact
+10. Enjoyment
+
+Scores use 0.5-point increments and support optional personal notes.
 
 ## Run
 

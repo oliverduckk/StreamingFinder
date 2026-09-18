@@ -12,6 +12,7 @@ class SQLiteDatabase:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         connection = sqlite3.connect(self.path)
         connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA foreign_keys = ON")
         return connection
 
     def initialise(self) -> None:
@@ -41,6 +42,32 @@ class SQLiteDatabase:
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     PRIMARY KEY (media_type, tmdb_id)
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS media_ratings (
+                    media_type TEXT NOT NULL CHECK (media_type IN ('movie', 'tv')),
+                    tmdb_id INTEGER NOT NULL,
+                    notes TEXT,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (media_type, tmdb_id)
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS media_rating_scores (
+                    media_type TEXT NOT NULL,
+                    tmdb_id INTEGER NOT NULL,
+                    category_key TEXT NOT NULL,
+                    score REAL NOT NULL CHECK (score >= 0 AND score <= 10),
+                    PRIMARY KEY (media_type, tmdb_id, category_key),
+                    FOREIGN KEY (media_type, tmdb_id)
+                        REFERENCES media_ratings(media_type, tmdb_id)
+                        ON DELETE CASCADE
                 )
                 """
             )

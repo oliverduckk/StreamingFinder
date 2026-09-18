@@ -245,3 +245,177 @@ QCheckBox#favouriteToggle:checked {
 }
 
 """
+
+# Rating dialog styles appended in V0.8
+APP_STYLESHEET += """
+QLabel#ratingSummary {
+    color: #d8d1ff;
+    font-weight: 700;
+}
+
+QPushButton#rateButton {
+    color: #ded9ff;
+    background-color: #242133;
+    border: 1px solid #4f477d;
+    padding: 6px 11px;
+}
+
+QPushButton#rateButton:hover {
+    background-color: #302b46;
+    border: 1px solid #7667e8;
+}
+
+QLabel#ratingDialogTitle {
+    font-size: 18pt;
+    font-weight: 700;
+}
+
+QLabel#ratingTotal {
+    color: #d8d1ff;
+    font-size: 20pt;
+    font-weight: 800;
+}
+
+QDoubleSpinBox#ratingScore {
+    background-color: #1b1d25;
+    border: 1px solid #3b3f4d;
+    border-radius: 8px;
+    padding: 6px 8px;
+    min-width: 90px;
+}
+
+QDoubleSpinBox#ratingScore:focus {
+    border: 1px solid #8274f2;
+}
+
+QPlainTextEdit#ratingNotes {
+    background-color: #17191f;
+    border: 1px solid #343844;
+    border-radius: 10px;
+    padding: 9px;
+    selection-background-color: #7667e8;
+}
+
+QPlainTextEdit#ratingNotes:focus {
+    border: 1px solid #8274f2;
+}
+"""
+
+# Library navigation and poster-grid styles appended in V0.9
+APP_STYLESHEET += """
+QPushButton#navButton {
+    color: #aeb3bf;
+    background-color: transparent;
+    border: 1px solid transparent;
+    border-radius: 9px;
+    padding: 7px 15px;
+    font-weight: 700;
+}
+
+QPushButton#navButton:hover {
+    color: #f2efff;
+    background-color: #1c1d26;
+    border: 1px solid #353748;
+}
+
+QPushButton#navButton[active="true"] {
+    color: #f2efff;
+    background-color: #2b2940;
+    border: 1px solid #6f61dc;
+}
+
+QLabel#libraryHeading {
+    font-size: 18pt;
+    font-weight: 750;
+}
+
+QComboBox#libraryFilter {
+    background-color: #1b1d25;
+    border: 1px solid #3b3f4d;
+    border-radius: 8px;
+    padding: 8px 10px;
+    min-width: 125px;
+}
+
+QComboBox#libraryFilter:focus {
+    border: 1px solid #8274f2;
+}
+
+QComboBox#libraryFilter::drop-down {
+    border: none;
+    width: 22px;
+}
+
+QCheckBox#libraryFavouriteFilter {
+    color: #d8d1ff;
+    padding: 7px 8px;
+}
+
+QFrame#libraryCard {
+    background-color: #17191f;
+    border: 1px solid #2d3040;
+    border-radius: 12px;
+}
+
+QFrame#libraryCard:hover {
+    background-color: #1b1d25;
+    border: 1px solid #625a99;
+}
+
+QLabel#libraryPoster {
+    color: #8f95a3;
+    background-color: #111218;
+    border: 1px solid #30343e;
+    border-radius: 9px;
+}
+
+QLabel#libraryCardTitle {
+    font-size: 11pt;
+    font-weight: 700;
+}
+
+QLabel#libraryStatusBadge {
+    color: #d8d1ff;
+    background-color: #242133;
+    border: 1px solid #403a66;
+    border-radius: 7px;
+    padding: 3px 7px;
+    font-weight: 600;
+}
+
+QLabel#libraryFavouriteBadge {
+    color: #e7e2ff;
+    background-color: #302a49;
+    border: 1px solid #5d5296;
+    border-radius: 7px;
+    padding: 3px 7px;
+    font-weight: 700;
+}
+
+QLabel#libraryCardRating {
+    color: #cfc7ff;
+    font-size: 12pt;
+    font-weight: 800;
+}
+
+QPushButton#libraryOpenButton {
+    color: #ded9ff;
+    background-color: #242133;
+    border: 1px solid #4f477d;
+    border-radius: 8px;
+    padding: 7px 10px;
+    font-weight: 650;
+}
+
+QPushButton#libraryOpenButton:hover {
+    background-color: #302b46;
+    border: 1px solid #7667e8;
+}
+
+QFrame#libraryEmptyState {
+    background-color: #15171d;
+    border: 1px dashed #4f477d;
+    border-radius: 12px;
+    min-width: 520px;
+}
+"""
