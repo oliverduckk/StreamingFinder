@@ -98,3 +98,22 @@ def test_library_api_can_save_read_list_and_delete(tmp_path) -> None:
         assert missing_response.status_code == 404
     finally:
         app.dependency_overrides.clear()
+
+
+def test_library_persists_anime_classification(tmp_path) -> None:
+    repository = MediaLibraryRepository(SQLiteDatabase(tmp_path / "library.db"))
+    anime = MediaSearchResult(
+        tmdb_id=16498,
+        media_type="tv",
+        title="Attack on Titan",
+        year=2013,
+        genre_ids=[16, 18],
+        original_language="ja",
+        is_anime=True,
+    )
+
+    repository.upsert(anime, "watched")
+    saved = repository.get("tv", 16498)
+
+    assert saved is not None
+    assert saved.is_anime is True

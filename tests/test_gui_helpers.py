@@ -49,3 +49,11 @@ def test_split_country_preview_preserves_order() -> None:
 
     with pytest.raises(ValueError):
         split_country_preview(countries, limit=-1)
+
+
+def test_responsive_column_count_uses_available_width() -> None:
+    from app.gui.helpers import responsive_column_count
+
+    assert responsive_column_count(1000, 220, 14) == 4
+    assert responsive_column_count(2400, 220, 14, max_columns=10) == 10
+    assert responsive_column_count(3400, 350, 14, max_columns=6) == 6

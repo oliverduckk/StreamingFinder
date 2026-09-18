@@ -1,7 +1,7 @@
 from collections.abc import Callable
 
 from PySide6.QtCore import QSize, Qt, QThreadPool, QTimer, QUrl, Slot
-from PySide6.QtGui import QIcon, QPixmap
+from PySide6.QtGui import QIcon, QPixmap, QResizeEvent
 from PySide6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -33,6 +33,7 @@ from app.gui.helpers import (
     media_subtitle,
     poster_url,
     provider_logo_url,
+    responsive_column_count,
     split_country_preview,
 )
 from app.gui.rating_dialog import RatingDialog
@@ -43,12 +44,22 @@ from app.models.media import (
     MediaLibraryEntry,
     MediaRating,
     MediaSearchResult,
+    RatedTitleSummary,
+    RatingsDashboard,
+    RecommendationItem,
+    RecommendationResponse,
+    TasteProfile,
     StreamingServiceAvailability,
 )
+from app.repositories.dismissals import RecommendationDismissalRepository
 from app.repositories.library import MediaLibraryRepository
 from app.repositories.preferences import StreamingPreferencesRepository
 from app.repositories.ratings import MediaRatingRepository
 from app.services.library_catalog import prepare_library_entries, rating_totals
+from app.services.library_classification import LibraryClassificationService
+from app.services.ratings_dashboard import build_ratings_dashboard
+from app.services.recommendations import RecommendationService
+from app.services.taste_profile import build_taste_profile
 from app.services.streaming_services import STREAMING_SERVICES
 
 
@@ -60,7 +71,12 @@ class MainWindow(QMainWindow):
         database = SQLiteDatabase(self.settings.database_path)
         self.preferences = StreamingPreferencesRepository(database)
         self.library = MediaLibraryRepository(database)
+        self.library_classifier = LibraryClassificationService(self.tmdb, self.library)
         self.ratings = MediaRatingRepository(database)
+        self.dismissals = RecommendationDismissalRepository(database)
+        self.recommendations = RecommendationService(
+            self.tmdb, self.library, self.ratings, self.preferences, self.dismissals
+        )
         self.thread_pool = QThreadPool.globalInstance()
         self.network = QNetworkAccessManager(self)
         self.current_media: MediaSearchResult | None = None
@@ -68,6 +84,11 @@ class MainWindow(QMainWindow):
         self._availability_generation = 0
         self._active_operations = 0
         self._library_dirty = True
+        self._library_classification_running = False
+        self._ratings_dirty = True
+        self._recommendations_dirty = True
+        self._library_cards: list[QWidget] = []
+        self._recommendation_cards: list[QWidget] = []
         self._preference_refresh_timer = QTimer(self)
         self._preference_refresh_timer.setSingleShot(True)
         self._preference_refresh_timer.setInterval(250)
@@ -106,16 +127,28 @@ class MainWindow(QMainWindow):
         self.library_nav_button = QPushButton("Library")
         self.library_nav_button.setObjectName("navButton")
         self.library_nav_button.clicked.connect(self._show_library_page)
+        self.ratings_nav_button = QPushButton("Ratings")
+        self.ratings_nav_button.setObjectName("navButton")
+        self.ratings_nav_button.clicked.connect(self._show_ratings_page)
+        self.recommendations_nav_button = QPushButton("Recommendations")
+        self.recommendations_nav_button.setObjectName("navButton")
+        self.recommendations_nav_button.clicked.connect(self._show_recommendations_page)
         navigation.addWidget(self.search_nav_button)
         navigation.addWidget(self.library_nav_button)
+        navigation.addWidget(self.ratings_nav_button)
+        navigation.addWidget(self.recommendations_nav_button)
         navigation.addStretch()
         root_layout.addLayout(navigation)
 
         self.page_stack = QStackedWidget()
         self.search_page = self._build_search_page()
         self.library_page = self._build_library_page()
+        self.ratings_page = self._build_ratings_page()
+        self.recommendations_page = self._build_recommendations_page()
         self.page_stack.addWidget(self.search_page)
         self.page_stack.addWidget(self.library_page)
+        self.page_stack.addWidget(self.ratings_page)
+        self.page_stack.addWidget(self.recommendations_page)
         root_layout.addWidget(self.page_stack, 1)
 
         self.setCentralWidget(root)
@@ -355,9 +388,10 @@ class MainWindow(QMainWindow):
 
         self.library_type_filter = QComboBox()
         self.library_type_filter.setObjectName("libraryFilter")
-        self.library_type_filter.addItem("Movies + TV", "")
+        self.library_type_filter.addItem("Everything", "all")
         self.library_type_filter.addItem("Movies", "movie")
-        self.library_type_filter.addItem("TV series", "tv")
+        self.library_type_filter.addItem("TV series (live action)", "tv")
+        self.library_type_filter.addItem("Anime", "anime")
         self.library_type_filter.currentIndexChanged.connect(self._refresh_library_view)
 
         self.library_sort_combo = QComboBox()
@@ -392,10 +426,292 @@ class MainWindow(QMainWindow):
         self.library_grid.setContentsMargins(2, 2, 8, 8)
         self.library_grid.setHorizontalSpacing(14)
         self.library_grid.setVerticalSpacing(14)
-        self.library_grid.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+        self.library_grid.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter)
         self.library_scroll.setWidget(self.library_grid_widget)
         layout.addWidget(self.library_scroll, 1)
         return page
+
+    def _build_ratings_page(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(14)
+
+        header = QFrame()
+        header.setObjectName("panel")
+        header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(16, 14, 16, 14)
+        header_text = QVBoxLayout()
+        heading = QLabel("Ratings dashboard")
+        heading.setObjectName("ratingsHeading")
+        self.ratings_summary_label = QLabel(
+            "Your rating history will turn into a taste profile here."
+        )
+        self.ratings_summary_label.setObjectName("muted")
+        header_text.addWidget(heading)
+        header_text.addWidget(self.ratings_summary_label)
+        header_layout.addLayout(header_text)
+        header_layout.addStretch()
+        layout.addWidget(header)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        content = QWidget()
+        self.ratings_content_layout = QVBoxLayout(content)
+        self.ratings_content_layout.setContentsMargins(0, 0, 8, 8)
+        self.ratings_content_layout.setSpacing(14)
+
+        self.ratings_empty_state = QFrame()
+        self.ratings_empty_state.setObjectName("ratingsEmptyState")
+        empty_layout = QVBoxLayout(self.ratings_empty_state)
+        empty_layout.setContentsMargins(28, 34, 28, 34)
+        empty_title = QLabel("No ratings yet")
+        empty_title.setObjectName("sectionTitle")
+        empty_text = QLabel(
+            "Rate a movie or show from Search and your averages, rankings, "
+            "and category profile will appear here."
+        )
+        empty_text.setObjectName("muted")
+        empty_text.setWordWrap(True)
+        empty_layout.addWidget(empty_title)
+        empty_layout.addWidget(empty_text)
+        self.ratings_content_layout.addWidget(self.ratings_empty_state)
+
+        self.ratings_dashboard_container = QWidget()
+        dashboard_layout = QVBoxLayout(self.ratings_dashboard_container)
+        dashboard_layout.setContentsMargins(0, 0, 0, 0)
+        dashboard_layout.setSpacing(14)
+
+        metrics = QHBoxLayout()
+        metrics.setSpacing(12)
+        self.rated_count_value = QLabel("0")
+        self.average_rating_value = QLabel("—")
+        self.movie_average_value = QLabel("—")
+        self.tv_average_value = QLabel("—")
+        metrics.addWidget(self._build_rating_stat_card("Rated titles", self.rated_count_value))
+        metrics.addWidget(self._build_rating_stat_card("Average score", self.average_rating_value))
+        metrics.addWidget(self._build_rating_stat_card("Movie average", self.movie_average_value))
+        metrics.addWidget(self._build_rating_stat_card("TV average", self.tv_average_value))
+        dashboard_layout.addLayout(metrics)
+
+        taste_panel = QFrame()
+        taste_panel.setObjectName("tasteProfilePanel")
+        taste_layout = QVBoxLayout(taste_panel)
+        taste_layout.setContentsMargins(16, 14, 16, 16)
+        taste_layout.setSpacing(10)
+
+        taste_header = QHBoxLayout()
+        taste_title = QLabel("Taste profile")
+        taste_title.setObjectName("sectionTitle")
+        self.taste_confidence_badge = QLabel("EARLY")
+        self.taste_confidence_badge.setObjectName("tasteConfidenceBadge")
+        taste_header.addWidget(taste_title)
+        taste_header.addStretch()
+        taste_header.addWidget(self.taste_confidence_badge)
+        taste_layout.addLayout(taste_header)
+
+        self.taste_summary_label = QLabel(
+            "Rate a few titles and StreamingFinder will start mapping your taste."
+        )
+        self.taste_summary_label.setObjectName("muted")
+        self.taste_summary_label.setWordWrap(True)
+        taste_layout.addWidget(self.taste_summary_label)
+
+        taste_columns = QHBoxLayout()
+        taste_columns.setSpacing(18)
+
+        strengths_column = QVBoxLayout()
+        strengths_heading = QLabel("Highest-scoring traits")
+        strengths_heading.setObjectName("tasteSubheading")
+        strengths_column.addWidget(strengths_heading)
+        self.taste_strengths_layout = QVBoxLayout()
+        self.taste_strengths_layout.setSpacing(6)
+        strengths_column.addLayout(self.taste_strengths_layout)
+        strengths_column.addStretch()
+        taste_columns.addLayout(strengths_column, 1)
+
+        alignment_column = QVBoxLayout()
+        alignment_heading = QLabel("What moves with Enjoyment")
+        alignment_heading.setObjectName("tasteSubheading")
+        alignment_column.addWidget(alignment_heading)
+        self.taste_alignment_layout = QVBoxLayout()
+        self.taste_alignment_layout.setSpacing(6)
+        alignment_column.addLayout(self.taste_alignment_layout)
+        alignment_column.addStretch()
+        taste_columns.addLayout(alignment_column, 1)
+        taste_layout.addLayout(taste_columns)
+
+        self.taste_favourite_label = QLabel("")
+        self.taste_favourite_label.setObjectName("tasteFootnote")
+        self.taste_favourite_label.setWordWrap(True)
+        taste_layout.addWidget(self.taste_favourite_label)
+        dashboard_layout.addWidget(taste_panel)
+
+        split = QHBoxLayout()
+        split.setSpacing(14)
+
+        category_panel = QFrame()
+        category_panel.setObjectName("panel")
+        category_layout = QVBoxLayout(category_panel)
+        category_layout.setContentsMargins(16, 14, 16, 16)
+        category_layout.setSpacing(9)
+        category_title = QLabel("Category averages")
+        category_title.setObjectName("sectionTitle")
+        category_layout.addWidget(category_title)
+        category_hint = QLabel("Your average score out of 10 for each rating category.")
+        category_hint.setObjectName("muted")
+        category_hint.setWordWrap(True)
+        category_layout.addWidget(category_hint)
+        self.category_average_layout = QVBoxLayout()
+        self.category_average_layout.setSpacing(8)
+        category_layout.addLayout(self.category_average_layout)
+        category_layout.addStretch()
+        split.addWidget(category_panel, 1)
+
+        top_panel = QFrame()
+        top_panel.setObjectName("panel")
+        top_layout = QVBoxLayout(top_panel)
+        top_layout.setContentsMargins(16, 14, 16, 16)
+        top_layout.setSpacing(9)
+        top_title = QLabel("Highest rated")
+        top_title.setObjectName("sectionTitle")
+        top_layout.addWidget(top_title)
+        top_hint = QLabel("Your current top-rated movies and shows.")
+        top_hint.setObjectName("muted")
+        top_layout.addWidget(top_hint)
+        self.top_rated_layout = QVBoxLayout()
+        self.top_rated_layout.setSpacing(8)
+        top_layout.addLayout(self.top_rated_layout)
+        top_layout.addStretch()
+        split.addWidget(top_panel, 1)
+        dashboard_layout.addLayout(split)
+
+        recent_panel = QFrame()
+        recent_panel.setObjectName("panel")
+        recent_layout = QVBoxLayout(recent_panel)
+        recent_layout.setContentsMargins(16, 14, 16, 16)
+        recent_layout.setSpacing(9)
+        recent_title = QLabel("Recently rated")
+        recent_title.setObjectName("sectionTitle")
+        recent_layout.addWidget(recent_title)
+        self.recent_rated_layout = QVBoxLayout()
+        self.recent_rated_layout.setSpacing(8)
+        recent_layout.addLayout(self.recent_rated_layout)
+        dashboard_layout.addWidget(recent_panel)
+
+        self.ratings_content_layout.addWidget(self.ratings_dashboard_container)
+        self.ratings_content_layout.addStretch()
+        scroll.setWidget(content)
+        layout.addWidget(scroll, 1)
+        self.ratings_dashboard_container.hide()
+        return page
+
+    def _build_recommendations_page(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(14)
+
+        header = QFrame()
+        header.setObjectName("recommendationsHero")
+        header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(18, 15, 18, 15)
+        header_layout.setSpacing(14)
+
+        text_column = QVBoxLayout()
+        text_column.setSpacing(4)
+        heading = QLabel("What should I watch?")
+        heading.setObjectName("recommendationsHeading")
+        description = QLabel(
+            "Blends your high and low ratings with genres, keywords and creators, "
+            "then diversifies the results and checks worldwide availability."
+        )
+        description.setObjectName("muted")
+        description.setWordWrap(True)
+        text_column.addWidget(heading)
+        text_column.addWidget(description)
+        header_layout.addLayout(text_column, 1)
+
+        controls = QHBoxLayout()
+        controls.setSpacing(8)
+        self.recommendation_type_combo = QComboBox()
+        self.recommendation_type_combo.addItem("Movies + TV", "all")
+        self.recommendation_type_combo.addItem("Movies", "movie")
+        self.recommendation_type_combo.addItem("TV series (live action)", "tv")
+        self.recommendation_type_combo.addItem("Anime (movies + series)", "anime")
+        controls.addWidget(self.recommendation_type_combo)
+
+        self.recommendation_discovery_combo = QComboBox()
+        self.recommendation_discovery_combo.setToolTip(
+            "Familiar favours well-known titles; Hidden gems allows much smaller TMDB audiences."
+        )
+        self.recommendation_discovery_combo.addItem("Familiar", "familiar")
+        self.recommendation_discovery_combo.addItem("Balanced", "balanced")
+        self.recommendation_discovery_combo.addItem("Hidden gems", "hidden")
+        controls.addWidget(self.recommendation_discovery_combo)
+
+        self.recommendation_services_checkbox = QCheckBox("Only my services")
+        self.recommendation_services_checkbox.setChecked(True)
+        controls.addWidget(self.recommendation_services_checkbox)
+
+        self.recommendation_refresh_button = QPushButton("Recommend something")
+        self.recommendation_refresh_button.setProperty("accent", True)
+        self.recommendation_refresh_button.clicked.connect(self._refresh_recommendations)
+        controls.addWidget(self.recommendation_refresh_button)
+        header_layout.addLayout(controls)
+        layout.addWidget(header)
+
+        self.recommendation_status_label = QLabel(
+            "Generate a fresh set whenever you want something new to watch."
+        )
+        self.recommendation_status_label.setObjectName("status")
+        self.recommendation_status_label.setWordWrap(True)
+        layout.addWidget(self.recommendation_status_label)
+
+        self.recommendation_loading_bar = QProgressBar()
+        self.recommendation_loading_bar.setObjectName("loadingBar")
+        self.recommendation_loading_bar.setRange(0, 0)
+        self.recommendation_loading_bar.setTextVisible(False)
+        self.recommendation_loading_bar.setFixedHeight(3)
+        self.recommendation_loading_bar.hide()
+        layout.addWidget(self.recommendation_loading_bar)
+
+        self.recommendation_scroll = QScrollArea()
+        self.recommendation_scroll.setWidgetResizable(True)
+        self.recommendation_scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        content = QWidget()
+        self.recommendations_grid = QGridLayout(content)
+        self.recommendations_grid.setContentsMargins(2, 2, 8, 8)
+        self.recommendations_grid.setHorizontalSpacing(14)
+        self.recommendations_grid.setVerticalSpacing(14)
+        self.recommendations_grid.setAlignment(
+            Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter
+        )
+        self.recommendation_scroll.setWidget(content)
+        layout.addWidget(self.recommendation_scroll, 1)
+
+        self._set_recommendations_message(
+            "Your rating history powers this page. Hit Recommend something when you're ready."
+        )
+        return page
+
+    @staticmethod
+    def _build_rating_stat_card(label_text: str, value_label: QLabel) -> QFrame:
+        card = QFrame()
+        card.setObjectName("ratingStatCard")
+        card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(16, 13, 16, 13)
+        card_layout.setSpacing(4)
+        value_label.setObjectName("ratingStatValue")
+        label = QLabel(label_text)
+        label.setObjectName("ratingStatLabel")
+        card_layout.addWidget(value_label)
+        card_layout.addWidget(label)
+        return card
 
     def _show_search_page(self) -> None:
         self.page_stack.setCurrentWidget(self.search_page)
@@ -405,13 +721,561 @@ class MainWindow(QMainWindow):
         self.page_stack.setCurrentWidget(self.library_page)
         self._set_navigation_state("library")
         self._refresh_library_view()
+        self._backfill_library_classifications()
+
+    def _show_ratings_page(self) -> None:
+        self.page_stack.setCurrentWidget(self.ratings_page)
+        self._set_navigation_state("ratings")
+        self._refresh_ratings_dashboard()
+
+    def _show_recommendations_page(self) -> None:
+        self.page_stack.setCurrentWidget(self.recommendations_page)
+        self._set_navigation_state("recommendations")
+        if self._recommendations_dirty:
+            self._set_recommendations_message(
+                "Your ratings or library changed. Generate a fresh set to update recommendations."
+            )
 
     def _set_navigation_state(self, active: str) -> None:
-        buttons = {"search": self.search_nav_button, "library": self.library_nav_button}
+        buttons = {
+            "search": self.search_nav_button,
+            "library": self.library_nav_button,
+            "ratings": self.ratings_nav_button,
+            "recommendations": self.recommendations_nav_button,
+        }
         for key, button in buttons.items():
             button.setProperty("active", key == active)
             button.style().unpolish(button)
             button.style().polish(button)
+
+    def _refresh_recommendations(self) -> None:
+        media_type = self.recommendation_type_combo.currentData() or "all"
+        discovery_mode = self.recommendation_discovery_combo.currentData() or "familiar"
+        only_my_services = self.recommendation_services_checkbox.isChecked()
+        self.recommendation_refresh_button.setEnabled(False)
+        self.recommendation_loading_bar.show()
+        self.recommendation_status_label.setText(
+            "Building your taste model, diversifying candidates and checking availability…"
+            if only_my_services
+            else "Building your taste model and diversifying candidates…"
+        )
+        self._set_recommendations_message("Finding a fresh set…")
+
+        async def fetch() -> RecommendationResponse:
+            return await self.recommendations.recommend(
+                media_type=media_type,
+                limit=12,
+                only_my_services=only_my_services,
+                discovery_mode=discovery_mode,
+            )
+
+        worker = AsyncWorker(fetch)
+        worker.signals.result.connect(self._handle_recommendations_result)
+        worker.signals.error.connect(self._show_recommendations_error)
+        worker.signals.finished.connect(self._finish_recommendations_loading)
+        self.thread_pool.start(worker)
+
+    @Slot(object)
+    def _handle_recommendations_result(self, payload: object) -> None:
+        if not isinstance(payload, RecommendationResponse):
+            self._show_recommendations_error("Unexpected recommendation response.")
+            return
+        self.recommendation_status_label.setText(payload.message)
+        self._clear_layout(self.recommendations_grid)
+        self._recommendation_cards = []
+        if not payload.items:
+            self._set_recommendations_message(payload.message)
+            self._recommendations_dirty = False
+            return
+
+        self._recommendation_cards = [
+            self._build_recommendation_card(item) for item in payload.items
+        ]
+        self._reflow_recommendations_grid()
+        self._recommendations_dirty = False
+
+    @Slot(str)
+    def _show_recommendations_error(self, message: str) -> None:
+        self.recommendation_status_label.setText(f"Recommendation error: {message}")
+        self._set_recommendations_message(
+            "Could not generate recommendations. Check your TMDB connection and try again."
+        )
+
+    @Slot()
+    def _finish_recommendations_loading(self) -> None:
+        self.recommendation_loading_bar.hide()
+        self.recommendation_refresh_button.setEnabled(True)
+
+    def _set_recommendations_message(self, message: str) -> None:
+        if not hasattr(self, "recommendations_grid"):
+            return
+        self._clear_layout(self.recommendations_grid)
+        self._recommendation_cards = []
+        frame = QFrame()
+        frame.setObjectName("recommendationsEmptyState")
+        frame_layout = QVBoxLayout(frame)
+        frame_layout.setContentsMargins(28, 34, 28, 34)
+        title = QLabel("Personal recommendations")
+        title.setObjectName("sectionTitle")
+        body = QLabel(message)
+        body.setObjectName("muted")
+        body.setWordWrap(True)
+        frame_layout.addWidget(title)
+        frame_layout.addWidget(body)
+        self.recommendations_grid.addWidget(frame, 0, 0, 1, 1)
+
+    def _build_recommendation_card(self, item: RecommendationItem) -> QFrame:
+        card = QFrame()
+        card.setObjectName("recommendationCard")
+        card.setFixedWidth(350)
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(12, 12, 12, 13)
+        card_layout.setSpacing(8)
+
+        top = QHBoxLayout()
+        top.setSpacing(11)
+        poster = QLabel("No poster")
+        poster.setObjectName("recommendationPoster")
+        poster.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        poster.setFixedSize(112, 168)
+        top.addWidget(poster, 0, Qt.AlignmentFlag.AlignTop)
+
+        info = QVBoxLayout()
+        info.setSpacing(5)
+        score = QLabel(f"Match {item.match_score:.1f} / 100")
+        score.setObjectName("recommendationScore")
+        info.addWidget(score)
+        title = QLabel(item.title)
+        title.setObjectName("recommendationTitle")
+        title.setWordWrap(True)
+        info.addWidget(title)
+        meta = QLabel(media_subtitle(item.media_type, item.year))
+        meta.setObjectName("muted")
+        info.addWidget(meta)
+        if item.genre_names:
+            genres = QLabel(" • ".join(item.genre_names[:3]))
+            genres.setObjectName("recommendationAudience")
+            genres.setWordWrap(True)
+            info.addWidget(genres)
+        if item.tmdb_vote_count:
+            audience = QLabel(
+                f"TMDB {item.tmdb_vote_average:.1f}/10 • {item.tmdb_vote_count:,} votes"
+            )
+            audience.setObjectName("recommendationAudience")
+            audience.setWordWrap(True)
+            info.addWidget(audience)
+        if item.on_watchlist:
+            watchlist_badge = QLabel("ON YOUR WATCHLIST")
+            watchlist_badge.setObjectName("recommendationWatchlistBadge")
+            info.addWidget(watchlist_badge, 0, Qt.AlignmentFlag.AlignLeft)
+        info.addStretch()
+        top.addLayout(info, 1)
+        card_layout.addLayout(top)
+
+        url = poster_url(item.poster_path, "w342")
+        if url:
+            self._request_image(
+                url,
+                lambda pixmap, target=poster: self._set_library_card_poster(target, pixmap),
+            )
+
+        reason_heading = QLabel("Why this fits")
+        reason_heading.setObjectName("recommendationSubheading")
+        card_layout.addWidget(reason_heading)
+        for reason in item.reasons[:2]:
+            label = QLabel(f"• {reason}")
+            label.setObjectName("recommendationReason")
+            label.setWordWrap(True)
+            card_layout.addWidget(label)
+
+        if item.providers:
+            availability_heading = QLabel("Where you can stream it")
+            availability_heading.setObjectName("recommendationSubheading")
+            card_layout.addWidget(availability_heading)
+            for provider in item.providers[:2]:
+                names = [country.name for country in provider.countries[:3]]
+                extra = len(provider.countries) - len(names)
+                countries = ", ".join(names)
+                if extra > 0:
+                    countries += f" +{extra}"
+                line = QLabel(f"{provider.service_name}: {countries or 'Available'}")
+                line.setObjectName("recommendationAvailability")
+                line.setWordWrap(True)
+                card_layout.addWidget(line)
+
+        primary_actions = QHBoxLayout()
+        open_button = QPushButton("Open details")
+        open_button.setObjectName("recommendationOpenButton")
+        open_button.clicked.connect(
+            lambda _checked=False, current=item: self._open_recommendation(current)
+        )
+        primary_actions.addWidget(open_button)
+
+        watchlist_button = QPushButton(
+            "On watchlist" if item.on_watchlist else "Add to watchlist"
+        )
+        watchlist_button.setObjectName("recommendationWatchlistButton")
+        watchlist_button.setEnabled(not item.on_watchlist)
+        watchlist_button.clicked.connect(
+            lambda _checked=False, current=item, button=watchlist_button: (
+                self._add_recommendation_to_watchlist(current, button)
+            )
+        )
+        primary_actions.addWidget(watchlist_button)
+        card_layout.addLayout(primary_actions)
+
+        feedback_actions = QHBoxLayout()
+        watched_button = QPushButton("I've watched this")
+        watched_button.setObjectName("recommendationFeedbackButton")
+        watched_button.clicked.connect(
+            lambda _checked=False, current=item, target=card: (
+                self._mark_recommendation_watched(current, target)
+            )
+        )
+        feedback_actions.addWidget(watched_button)
+
+        dismiss_button = QPushButton("Not interested")
+        dismiss_button.setObjectName("recommendationFeedbackButton")
+        dismiss_button.clicked.connect(
+            lambda _checked=False, current=item, target=card: (
+                self._dismiss_recommendation(current, target)
+            )
+        )
+        feedback_actions.addWidget(dismiss_button)
+        card_layout.addLayout(feedback_actions)
+        return card
+
+    def _open_recommendation(self, item: RecommendationItem) -> None:
+        media = MediaSearchResult(
+            tmdb_id=item.tmdb_id,
+            media_type=item.media_type,
+            title=item.title,
+            year=item.year,
+            overview=item.overview,
+            poster_path=item.poster_path,
+            is_anime=item.is_anime,
+        )
+        self.current_media = media
+        self._show_search_page()
+        self._show_media_summary(media)
+        self._load_library_state(media)
+        self._load_rating_state(media)
+        self._load_availability(media)
+
+    def _add_recommendation_to_watchlist(
+        self,
+        item: RecommendationItem,
+        button: QPushButton,
+    ) -> None:
+        media = MediaSearchResult(
+            tmdb_id=item.tmdb_id,
+            media_type=item.media_type,
+            title=item.title,
+            year=item.year,
+            overview=item.overview,
+            poster_path=item.poster_path,
+            is_anime=item.is_anime,
+        )
+        self.library.upsert(media, "watchlist")
+        item.on_watchlist = True
+        button.setText("On watchlist")
+        button.setEnabled(False)
+        self._library_dirty = True
+        self._recommendations_dirty = True
+        self.recommendation_status_label.setText(f"Added {item.title} to your watchlist.")
+
+    def _mark_recommendation_watched(
+        self,
+        item: RecommendationItem,
+        card: QWidget,
+    ) -> None:
+        media = MediaSearchResult(
+            tmdb_id=item.tmdb_id,
+            media_type=item.media_type,
+            title=item.title,
+            year=item.year,
+            overview=item.overview,
+            poster_path=item.poster_path,
+            is_anime=item.is_anime,
+        )
+        self.library.upsert(media, "watched")
+        self._library_dirty = True
+        self._ratings_dirty = True
+        self._recommendations_dirty = True
+        self.recommendation_status_label.setText(
+            f"Marked {item.title} as watched. It will be excluded from future recommendations."
+        )
+        self._remove_recommendation_card(card)
+
+    def _dismiss_recommendation(
+        self,
+        item: RecommendationItem,
+        card: QWidget,
+    ) -> None:
+        self.dismissals.add(item.media_type, item.tmdb_id, item.title)
+        self._recommendations_dirty = True
+        self.recommendation_status_label.setText(
+            f"Hidden {item.title} from future recommendations."
+        )
+        self._remove_recommendation_card(card)
+
+    def _remove_recommendation_card(self, card: QWidget) -> None:
+        if card in self._recommendation_cards:
+            self._recommendation_cards.remove(card)
+        self.recommendations_grid.removeWidget(card)
+        card.deleteLater()
+        QTimer.singleShot(0, self._reflow_recommendations_grid)
+
+    def _refresh_ratings_dashboard(self) -> None:
+        if not hasattr(self, "ratings_dashboard_container"):
+            return
+
+        ratings = self.ratings.list()
+        library_entries = self.library.list()
+        dashboard = build_ratings_dashboard(ratings, library_entries)
+        taste_profile = build_taste_profile(ratings, library_entries)
+        self.ratings_summary_label.setText(self._ratings_summary_text(dashboard))
+        self._refresh_taste_profile(taste_profile)
+
+        if dashboard.total_rated == 0:
+            self.ratings_empty_state.show()
+            self.ratings_dashboard_container.hide()
+            self._ratings_dirty = False
+            return
+
+        self.ratings_empty_state.hide()
+        self.ratings_dashboard_container.show()
+        self.rated_count_value.setText(str(dashboard.total_rated))
+        self.average_rating_value.setText(self._format_score(dashboard.average_total))
+        self.movie_average_value.setText(self._format_score(dashboard.movie_average))
+        self.tv_average_value.setText(self._format_score(dashboard.tv_average))
+
+        self._clear_layout(self.category_average_layout)
+        for category in dashboard.category_averages:
+            row = QWidget()
+            row_layout = QHBoxLayout(row)
+            row_layout.setContentsMargins(0, 0, 0, 0)
+            row_layout.setSpacing(9)
+            label = QLabel(category.label)
+            label.setFixedWidth(125)
+            bar = QProgressBar()
+            bar.setObjectName("ratingCategoryBar")
+            bar.setRange(0, 100)
+            bar.setTextVisible(False)
+            bar.setFixedHeight(9)
+            if category.average is not None:
+                bar.setValue(round(category.average * 10))
+            value = QLabel(
+                f"{category.average:.2f}" if category.average is not None else "—"
+            )
+            value.setObjectName("ratingCategoryValue")
+            value.setFixedWidth(42)
+            value.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            row_layout.addWidget(label)
+            row_layout.addWidget(bar, 1)
+            row_layout.addWidget(value)
+            self.category_average_layout.addWidget(row)
+
+        self._populate_rating_title_list(self.top_rated_layout, dashboard.top_rated)
+        self._populate_rating_title_list(self.recent_rated_layout, dashboard.recent_rated)
+        self._ratings_dirty = False
+
+    def _refresh_taste_profile(self, profile: TasteProfile) -> None:
+        self.taste_confidence_badge.setText(profile.confidence.upper())
+        self.taste_confidence_badge.setProperty("confidence", profile.confidence)
+        self.taste_confidence_badge.style().unpolish(self.taste_confidence_badge)
+        self.taste_confidence_badge.style().polish(self.taste_confidence_badge)
+        self.taste_summary_label.setText(profile.summary)
+
+        self._clear_layout(self.taste_strengths_layout)
+        if profile.strongest_categories:
+            for signal in profile.strongest_categories:
+                row = QFrame()
+                row.setObjectName("tasteSignalRow")
+                row_layout = QHBoxLayout(row)
+                row_layout.setContentsMargins(10, 7, 10, 7)
+                label = QLabel(signal.label)
+                label.setObjectName("tasteSignalLabel")
+                row_layout.addWidget(label)
+                row_layout.addStretch()
+                delta = signal.delta_from_personal_mean
+                delta_text = f"{delta:+.2f}" if abs(delta) >= 0.005 else "±0.00"
+                value = QLabel(f"{signal.average:.2f}  ({delta_text})")
+                value.setObjectName("tasteSignalValue")
+                value.setToolTip("Average score and difference from your mean category score.")
+                row_layout.addWidget(value)
+                self.taste_strengths_layout.addWidget(row)
+        else:
+            placeholder = QLabel("Rate something first.")
+            placeholder.setObjectName("muted")
+            self.taste_strengths_layout.addWidget(placeholder)
+
+        self._clear_layout(self.taste_alignment_layout)
+        if profile.enjoyment_alignments:
+            for signal in profile.enjoyment_alignments:
+                row = QFrame()
+                row.setObjectName("tasteSignalRow")
+                row_layout = QHBoxLayout(row)
+                row_layout.setContentsMargins(10, 7, 10, 7)
+                text_column = QVBoxLayout()
+                text_column.setSpacing(1)
+                label = QLabel(signal.label)
+                label.setObjectName("tasteSignalLabel")
+                detail = QLabel(f"Across {signal.sample_size} rated titles")
+                detail.setObjectName("muted")
+                text_column.addWidget(label)
+                text_column.addWidget(detail)
+                row_layout.addLayout(text_column, 1)
+                value = QLabel(f"{signal.correlation:+.2f}")
+                value.setObjectName("tasteCorrelationValue")
+                value.setToolTip(
+                    "Pearson correlation with your Enjoyment score. "
+                    "This is a pattern in your ratings, not proof of causation."
+                )
+                row_layout.addWidget(value)
+                self.taste_alignment_layout.addWidget(row)
+        else:
+            placeholder = QLabel(
+                "Needs at least 3 ratings with some score variation before a useful pattern appears."
+            )
+            placeholder.setObjectName("muted")
+            placeholder.setWordWrap(True)
+            self.taste_alignment_layout.addWidget(placeholder)
+
+        if profile.favourite_delta is None:
+            self.taste_favourite_label.setText(
+                "Favourite signal will appear once you have rated both favourite and non-favourite titles."
+            )
+        else:
+            sign = "+" if profile.favourite_delta >= 0 else ""
+            self.taste_favourite_label.setText(
+                f"Your favourites currently average {profile.favourite_average:.1f}/100 versus "
+                f"{profile.non_favourite_average:.1f}/100 for other rated titles "
+                f"({sign}{profile.favourite_delta:.1f} points)."
+            )
+
+    @staticmethod
+    def _ratings_summary_text(dashboard: RatingsDashboard) -> str:
+        if dashboard.total_rated == 0:
+            return "Your rating history will turn into a taste profile here."
+        average = (
+            f"{dashboard.average_total:.1f}/100"
+            if dashboard.average_total is not None
+            else "—"
+        )
+        highest = (
+            f"{dashboard.highest_total:.1f}/100"
+            if dashboard.highest_total is not None
+            else "—"
+        )
+        return (
+            f"{dashboard.total_rated} rated title(s) • "
+            f"{average} average • {highest} highest"
+        )
+
+    @staticmethod
+    def _format_score(score: float | None) -> str:
+        return f"{score:.1f}" if score is not None else "—"
+
+    def _populate_rating_title_list(
+        self,
+        layout: QLayout,
+        items: list[RatedTitleSummary],
+    ) -> None:
+        self._clear_layout(layout)
+        if not items:
+            placeholder = QLabel("No matching ratings yet.")
+            placeholder.setObjectName("muted")
+            layout.addWidget(placeholder)
+            return
+        for item in items:
+            layout.addWidget(self._build_rating_title_row(item))
+
+    def _build_rating_title_row(self, item: RatedTitleSummary) -> QFrame:
+        row = QFrame()
+        row.setObjectName("ratingsListRow")
+        row_layout = QHBoxLayout(row)
+        row_layout.setContentsMargins(11, 9, 11, 9)
+        row_layout.setSpacing(10)
+
+        text_column = QVBoxLayout()
+        text_column.setSpacing(2)
+        title = QLabel(item.title)
+        title.setObjectName("ratingsRowTitle")
+        title.setWordWrap(True)
+        meta_text = media_subtitle(item.media_type, item.year)
+        if item.favourite:
+            meta_text += " • ★ Favourite"
+        meta = QLabel(meta_text)
+        meta.setObjectName("muted")
+        text_column.addWidget(title)
+        text_column.addWidget(meta)
+        row_layout.addLayout(text_column, 1)
+
+        score = QLabel(f"{item.total:.1f}")
+        score.setObjectName("ratingsRowScore")
+        row_layout.addWidget(score)
+
+        open_button = QPushButton("Open")
+        open_button.setObjectName("ratingsOpenButton")
+        open_button.clicked.connect(
+            lambda _checked=False, current=item: self._open_rated_title(current)
+        )
+        row_layout.addWidget(open_button)
+        return row
+
+    def _open_rated_title(self, item: RatedTitleSummary) -> None:
+        entry = self.library.get(item.media_type, item.tmdb_id)
+        if entry is not None:
+            self._open_library_entry(entry)
+            return
+        media = MediaSearchResult(
+            tmdb_id=item.tmdb_id,
+            media_type=item.media_type,
+            title=item.title,
+            year=item.year,
+            overview=None,
+            poster_path=item.poster_path,
+        )
+        self.current_media = media
+        self._show_search_page()
+        self._show_media_summary(media)
+        self._load_library_state(media)
+        self._load_rating_state(media)
+        self._load_availability(media)
+
+    def _backfill_library_classifications(self) -> None:
+        if self._library_classification_running:
+            return
+        entries = self.library.list()
+        unknown_count = sum(1 for entry in entries if entry.is_anime is None)
+        if unknown_count == 0:
+            return
+
+        self._library_classification_running = True
+        self.library_results_label.setText(
+            f"Classifying {unknown_count} older library title(s) for Anime filtering…"
+        )
+        worker = AsyncWorker(lambda: self.library_classifier.backfill_unknown(entries))
+        worker.signals.result.connect(self._handle_library_classification_result)
+        worker.signals.error.connect(self._handle_library_classification_error)
+        worker.signals.finished.connect(self._finish_library_classification)
+        self.thread_pool.start(worker)
+
+    @Slot(object)
+    def _handle_library_classification_result(self, _payload: object) -> None:
+        self._library_dirty = True
+        self._refresh_library_view()
+
+    @Slot(str)
+    def _handle_library_classification_error(self, message: str) -> None:
+        self.library_results_label.setText(
+            f"Could not finish Anime classification: {message}"
+        )
+
+    @Slot()
+    def _finish_library_classification(self) -> None:
+        self._library_classification_running = False
 
     def _refresh_library_view(self, *_args: object) -> None:
         if not hasattr(self, "library_grid"):
@@ -421,13 +1285,13 @@ class MainWindow(QMainWindow):
         ratings = self.ratings.list()
         totals = rating_totals(ratings)
         status_value = self.library_status_filter.currentData() or None
-        type_value = self.library_type_filter.currentData() or None
+        content_filter = self.library_type_filter.currentData() or "all"
         sort_value = self.library_sort_combo.currentData() or "recent"
         filtered = prepare_library_entries(
             entries,
             query=self.library_search_input.text(),
             status=status_value,
-            media_type=type_value,
+            content_filter=content_filter,
             favourite_only=self.library_favourites_filter.isChecked(),
             sort_by=sort_value,
             ratings=totals,
@@ -436,7 +1300,11 @@ class MainWindow(QMainWindow):
         watched = sum(1 for entry in entries if entry.status == "watched")
         watchlist = sum(1 for entry in entries if entry.status == "watchlist")
         favourites = sum(1 for entry in entries if entry.favourite)
-        rated = sum(1 for entry in entries if (entry.media_type, entry.tmdb_id) in totals)
+        rated = sum(
+            1
+            for entry in entries
+            if (entry.media_type, entry.tmdb_id) in totals
+        )
         self.library_summary_label.setText(
             f"{len(entries)} title(s) • {watched} watched • {watchlist} watchlist • "
             f"{favourites} favourite(s) • {rated} rated"
@@ -446,6 +1314,7 @@ class MainWindow(QMainWindow):
         )
 
         self._clear_layout(self.library_grid)
+        self._library_cards = []
         if not filtered:
             empty = QFrame()
             empty.setObjectName("libraryEmptyState")
@@ -460,19 +1329,18 @@ class MainWindow(QMainWindow):
             empty_text.setWordWrap(True)
             empty_layout.addWidget(empty_title)
             empty_layout.addWidget(empty_text)
-            self.library_grid.addWidget(empty, 0, 0, 1, 4)
+            self.library_grid.addWidget(empty, 0, 0, 1, 1)
             self._library_dirty = False
             return
 
-        columns = 4
-        for index, entry in enumerate(filtered):
-            score = totals.get((entry.media_type, entry.tmdb_id))
-            self.library_grid.addWidget(
-                self._build_library_card(entry, score),
-                index // columns,
-                index % columns,
-                Qt.AlignmentFlag.AlignTop,
+        self._library_cards = [
+            self._build_library_card(
+                entry,
+                totals.get((entry.media_type, entry.tmdb_id)),
             )
+            for entry in filtered
+        ]
+        self._reflow_library_grid()
         self._library_dirty = False
 
     def _build_library_card(
@@ -545,6 +1413,7 @@ class MainWindow(QMainWindow):
             year=entry.year,
             overview=entry.overview,
             poster_path=entry.poster_path,
+            is_anime=entry.is_anime,
         )
         self.current_media = media
         self._show_search_page()
@@ -570,6 +1439,7 @@ class MainWindow(QMainWindow):
     def _on_service_selection_changed(self, _state: int) -> None:
         selected = self._selected_service_keys()
         self.preferences.set_enabled_services(selected)
+        self._recommendations_dirty = True
         self.status_label.setText("Streaming service preferences saved.")
         if self.current_media is not None:
             self._preference_refresh_timer.start()
@@ -693,6 +1563,8 @@ class MainWindow(QMainWindow):
         )
         self._load_rating_state(self.current_media)
         self._library_dirty = True
+        self._ratings_dirty = True
+        self._recommendations_dirty = True
         self.status_label.setText(
             f"Saved rating for {self.current_media.title}: {rating.total:.1f}/100."
         )
@@ -709,6 +1581,8 @@ class MainWindow(QMainWindow):
             self.favourite_checkbox.setEnabled(False)
             self.favourite_checkbox.blockSignals(False)
             self._library_dirty = True
+            self._ratings_dirty = True
+            self._recommendations_dirty = True
             self.status_label.setText(f"Removed {self.current_media.title} from your library.")
             return
 
@@ -719,6 +1593,8 @@ class MainWindow(QMainWindow):
         self.favourite_checkbox.setEnabled(True)
         self.favourite_checkbox.blockSignals(False)
         self._library_dirty = True
+        self._ratings_dirty = True
+        self._recommendations_dirty = True
         label = self.library_status_combo.currentText().lower()
         self.status_label.setText(f"Saved {self.current_media.title} as {label}.")
 
@@ -736,6 +1612,8 @@ class MainWindow(QMainWindow):
             favourite,
         )
         self._library_dirty = True
+        self._ratings_dirty = True
+        self._recommendations_dirty = True
         action = "Added to" if favourite else "Removed from"
         self.status_label.setText(f"{action} favourites: {self.current_media.title}.")
 
@@ -955,6 +1833,56 @@ class MainWindow(QMainWindow):
         self._active_operations = max(0, self._active_operations - 1)
         if self._active_operations == 0:
             self.loading_bar.hide()
+
+    def resizeEvent(self, event: QResizeEvent) -> None:
+        super().resizeEvent(event)
+        if hasattr(self, "library_scroll"):
+            QTimer.singleShot(0, self._reflow_library_grid)
+        if hasattr(self, "recommendations_grid"):
+            QTimer.singleShot(0, self._reflow_recommendations_grid)
+
+    def _reflow_library_grid(self) -> None:
+        if not self._library_cards or not hasattr(self, "library_scroll"):
+            return
+        columns = responsive_column_count(
+            self.library_scroll.viewport().width() - 16,
+            220,
+            14,
+            max_columns=10,
+        )
+        self._reflow_card_grid(self.library_grid, self._library_cards, columns)
+
+    def _reflow_recommendations_grid(self) -> None:
+        if not self._recommendation_cards or not hasattr(self, "recommendation_scroll"):
+            return
+        columns = responsive_column_count(
+            self.recommendation_scroll.viewport().width() - 16,
+            350,
+            14,
+            max_columns=6,
+        )
+        self._reflow_card_grid(
+            self.recommendations_grid,
+            self._recommendation_cards,
+            columns,
+        )
+
+    @staticmethod
+    def _reflow_card_grid(
+        grid: QGridLayout,
+        cards: list[QWidget],
+        columns: int,
+    ) -> None:
+        columns = max(1, columns)
+        for card in cards:
+            grid.removeWidget(card)
+        for index, card in enumerate(cards):
+            grid.addWidget(
+                card,
+                index // columns,
+                index % columns,
+                Qt.AlignmentFlag.AlignTop,
+            )
 
     def _request_image(
         self,

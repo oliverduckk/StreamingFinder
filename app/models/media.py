@@ -14,6 +14,29 @@ class MediaSearchResult(BaseModel):
     year: int | None = None
     overview: str | None = None
     poster_path: str | None = None
+    genre_ids: list[int] = Field(default_factory=list)
+    original_language: str | None = None
+    is_anime: bool | None = None
+
+
+class RecommendationCandidate(MediaSearchResult):
+    vote_average: float = 0.0
+    vote_count: int = 0
+    popularity: float = 0.0
+
+
+class MediaFeatureProfile(BaseModel):
+    media_type: MediaType
+    tmdb_id: int
+    genre_ids: list[int] = Field(default_factory=list)
+    genre_names: list[str] = Field(default_factory=list)
+    keyword_ids: list[int] = Field(default_factory=list)
+    keyword_names: list[str] = Field(default_factory=list)
+    collection_id: int | None = None
+    collection_name: str | None = None
+    creators: list[str] = Field(default_factory=list)
+    original_language: str | None = None
+    is_anime: bool = False
 
 
 class CountryAvailability(BaseModel):
@@ -55,6 +78,7 @@ class MediaLibraryEntry(BaseModel):
     year: int | None = None
     overview: str | None = None
     poster_path: str | None = None
+    is_anime: bool | None = None
     status: LibraryStatus
     favourite: bool = False
     created_at: str
@@ -66,6 +90,7 @@ class MediaLibrarySaveRequest(BaseModel):
     year: int | None = None
     overview: str | None = None
     poster_path: str | None = None
+    is_anime: bool | None = None
     status: LibraryStatus
     favourite: bool = False
 
@@ -125,3 +150,96 @@ class MediaRatingSaveRequest(BaseModel):
             if round(numeric * 2) != numeric * 2:
                 raise ValueError(f"{key} must use 0.5-point increments.")
         return self
+
+
+class RatingCategoryAverage(BaseModel):
+    key: str
+    label: str
+    average: float | None = None
+
+
+class RatedTitleSummary(BaseModel):
+    media_type: MediaType
+    tmdb_id: int
+    title: str
+    year: int | None = None
+    poster_path: str | None = None
+    total: float = Field(ge=0.0, le=100.0)
+    favourite: bool = False
+    updated_at: str
+
+
+class RatingsDashboard(BaseModel):
+    total_rated: int
+    average_total: float | None = None
+    highest_total: float | None = None
+    movie_average: float | None = None
+    tv_average: float | None = None
+    category_averages: list[RatingCategoryAverage]
+    top_rated: list[RatedTitleSummary]
+    recent_rated: list[RatedTitleSummary]
+
+
+class TasteCategorySignal(BaseModel):
+    key: str
+    label: str
+    average: float
+    delta_from_personal_mean: float
+
+
+class TasteAlignmentSignal(BaseModel):
+    key: str
+    label: str
+    correlation: float
+    sample_size: int
+
+
+class TasteProfile(BaseModel):
+    total_rated: int
+    confidence: Literal["empty", "early", "developing", "established"]
+    average_total: float | None = None
+    score_spread: float | None = None
+    strongest_categories: list[TasteCategorySignal]
+    enjoyment_alignments: list[TasteAlignmentSignal]
+    favourite_average: float | None = None
+    non_favourite_average: float | None = None
+    favourite_delta: float | None = None
+    summary: str
+
+
+class RecommendationDismissal(BaseModel):
+    media_type: MediaType
+    tmdb_id: int
+    title: str
+    created_at: str
+
+
+class RecommendationItem(BaseModel):
+    media_type: MediaType
+    tmdb_id: int
+    title: str
+    year: int | None = None
+    overview: str | None = None
+    poster_path: str | None = None
+    is_anime: bool = False
+    match_score: float = Field(ge=0.0, le=100.0)
+    tmdb_vote_average: float = Field(ge=0.0, le=10.0)
+    tmdb_vote_count: int = Field(ge=0)
+    seed_titles: list[str]
+    reasons: list[str]
+    on_watchlist: bool = False
+    genre_names: list[str] = Field(default_factory=list)
+    collection_id: int | None = None
+    collection_name: str | None = None
+    providers: list[StreamingServiceAvailability]
+
+
+class RecommendationResponse(BaseModel):
+    media_filter: Literal["all", "movie", "tv", "anime"]
+    discovery_mode: Literal["familiar", "balanced", "hidden"] = "balanced"
+    only_my_services: bool
+    generated_from: int = Field(ge=0)
+    total_considered: int = Field(ge=0)
+    message: str
+    items: list[RecommendationItem]
+

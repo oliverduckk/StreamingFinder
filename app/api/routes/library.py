@@ -48,6 +48,7 @@ def save_library_item(
         year=payload.year,
         overview=payload.overview,
         poster_path=payload.poster_path,
+        is_anime=payload.is_anime,
     )
     return library.upsert(media, payload.status, favourite=payload.favourite)
 

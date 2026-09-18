@@ -39,3 +39,22 @@ def split_country_preview(
     if limit < 0:
         raise ValueError("limit must be zero or greater")
     return countries[:limit], countries[limit:]
+
+
+def responsive_column_count(
+    available_width: int,
+    card_width: int,
+    spacing: int = 14,
+    *,
+    max_columns: int | None = None,
+) -> int:
+    """Return how many fixed-width cards fit in a viewport."""
+    if card_width <= 0:
+        raise ValueError("card_width must be greater than zero")
+    if spacing < 0:
+        raise ValueError("spacing must be zero or greater")
+    width = max(1, int(available_width))
+    columns = max(1, (width + spacing) // (card_width + spacing))
+    if max_columns is not None:
+        columns = min(columns, max(1, int(max_columns)))
+    return columns

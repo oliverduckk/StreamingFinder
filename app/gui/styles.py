@@ -419,3 +419,283 @@ QFrame#libraryEmptyState {
     min-width: 520px;
 }
 """
+
+# Ratings dashboard styles appended in V0.10
+APP_STYLESHEET += """
+QLabel#ratingsHeading {
+    font-size: 18pt;
+    font-weight: 750;
+}
+
+QFrame#ratingStatCard {
+    background-color: #17191f;
+    border: 1px solid #343747;
+    border-radius: 12px;
+}
+
+QFrame#ratingStatCard:hover {
+    border: 1px solid #625a99;
+}
+
+QLabel#ratingStatValue {
+    color: #d8d1ff;
+    font-size: 19pt;
+    font-weight: 800;
+}
+
+QLabel#ratingStatLabel {
+    color: #9da3af;
+    font-size: 9.5pt;
+}
+
+QProgressBar#ratingCategoryBar {
+    background-color: #20222a;
+    border: 1px solid #2f3240;
+    border-radius: 4px;
+}
+
+QProgressBar#ratingCategoryBar::chunk {
+    background-color: #7667e8;
+    border-radius: 3px;
+}
+
+QLabel#ratingCategoryValue {
+    color: #d8d1ff;
+    font-weight: 750;
+}
+
+QFrame#ratingsListRow {
+    background-color: #15171d;
+    border: 1px solid #2d3040;
+    border-radius: 9px;
+}
+
+QFrame#ratingsListRow:hover {
+    background-color: #1b1d25;
+    border: 1px solid #514b82;
+}
+
+QLabel#ratingsRowTitle {
+    font-weight: 700;
+}
+
+QLabel#ratingsRowScore {
+    color: #d8d1ff;
+    font-size: 13pt;
+    font-weight: 800;
+    min-width: 46px;
+}
+
+QPushButton#ratingsOpenButton {
+    color: #ded9ff;
+    background-color: #242133;
+    border: 1px solid #4f477d;
+    border-radius: 8px;
+    padding: 6px 10px;
+    font-weight: 650;
+}
+
+QPushButton#ratingsOpenButton:hover {
+    background-color: #302b46;
+    border: 1px solid #7667e8;
+}
+
+QFrame#ratingsEmptyState {
+    background-color: #15171d;
+    border: 1px dashed #4f477d;
+    border-radius: 12px;
+    min-height: 110px;
+}
+"""
+
+# Taste-profile styles appended in V0.11
+APP_STYLESHEET += """
+QFrame#tasteProfilePanel {
+    background-color: #17191f;
+    border: 1px solid #3d385c;
+    border-radius: 12px;
+}
+
+QLabel#tasteConfidenceBadge {
+    color: #ded9ff;
+    background-color: #242133;
+    border: 1px solid #5d5296;
+    border-radius: 7px;
+    padding: 4px 8px;
+    font-size: 8.5pt;
+    font-weight: 800;
+}
+
+QLabel#tasteConfidenceBadge[confidence="developing"] {
+    background-color: #2b2740;
+    border: 1px solid #7667e8;
+}
+
+QLabel#tasteConfidenceBadge[confidence="established"] {
+    background-color: #342d50;
+    border: 1px solid #8a79ff;
+}
+
+QLabel#tasteSubheading {
+    color: #d8d1ff;
+    font-weight: 700;
+}
+
+QFrame#tasteSignalRow {
+    background-color: #15171d;
+    border: 1px solid #2d3040;
+    border-radius: 8px;
+}
+
+QFrame#tasteSignalRow:hover {
+    border: 1px solid #514b82;
+}
+
+QLabel#tasteSignalLabel {
+    font-weight: 700;
+}
+
+QLabel#tasteSignalValue,
+QLabel#tasteCorrelationValue {
+    color: #d8d1ff;
+    font-weight: 800;
+}
+
+QLabel#tasteCorrelationValue {
+    font-size: 12pt;
+    min-width: 46px;
+}
+
+QLabel#tasteFootnote {
+    color: #8f95a3;
+    border-top: 1px solid #292c34;
+    padding-top: 8px;
+}
+"""
+
+# Recommendation styles appended in V0.12
+APP_STYLESHEET += """
+QFrame#recommendationsHero {
+    background-color: #17191f;
+    border: 1px solid #3d385c;
+    border-radius: 12px;
+}
+
+QLabel#recommendationsHeading {
+    font-size: 18pt;
+    font-weight: 800;
+}
+
+QFrame#recommendationCard {
+    background-color: #17191f;
+    border: 1px solid #343747;
+    border-radius: 12px;
+}
+
+QFrame#recommendationCard:hover {
+    background-color: #1b1d25;
+    border: 1px solid #7667e8;
+}
+
+QLabel#recommendationPoster {
+    color: #8f95a3;
+    background-color: #111218;
+    border: 1px solid #30343e;
+    border-radius: 9px;
+}
+
+QLabel#recommendationScore {
+    color: #e3ddff;
+    background-color: #302a49;
+    border: 1px solid #6c5ed4;
+    border-radius: 7px;
+    padding: 4px 7px;
+    font-size: 10pt;
+    font-weight: 800;
+}
+
+QLabel#recommendationTitle {
+    font-size: 13pt;
+    font-weight: 800;
+}
+
+QLabel#recommendationAudience {
+    color: #a9afba;
+    font-size: 9pt;
+}
+
+QLabel#recommendationWatchlistBadge {
+    color: #ded9ff;
+    background-color: #242133;
+    border: 1px solid #5d5296;
+    border-radius: 6px;
+    padding: 3px 6px;
+    font-size: 8pt;
+    font-weight: 800;
+}
+
+QLabel#recommendationSubheading {
+    color: #d8d1ff;
+    font-weight: 750;
+    border-top: 1px solid #292c34;
+    padding-top: 7px;
+}
+
+QLabel#recommendationReason {
+    color: #c6cad2;
+    line-height: 1.25;
+}
+
+QLabel#recommendationAvailability {
+    color: #b8b0ec;
+    background-color: #15171d;
+    border: 1px solid #2d3040;
+    border-radius: 7px;
+    padding: 6px 8px;
+}
+
+QPushButton#recommendationOpenButton,
+QPushButton#recommendationWatchlistButton {
+    color: #ded9ff;
+    background-color: #242133;
+    border: 1px solid #4f477d;
+    border-radius: 8px;
+    padding: 7px 10px;
+    font-weight: 650;
+}
+
+QPushButton#recommendationOpenButton:hover,
+QPushButton#recommendationWatchlistButton:hover {
+    background-color: #302b46;
+    border: 1px solid #7667e8;
+}
+
+QPushButton#recommendationWatchlistButton:disabled {
+    color: #8f95a3;
+    background-color: #1c1d24;
+    border: 1px solid #30333d;
+}
+
+QPushButton#recommendationFeedbackButton {
+    color: #aeb3bd;
+    background-color: #1b1d24;
+    border: 1px solid #343747;
+    border-radius: 8px;
+    padding: 6px 9px;
+    font-weight: 600;
+}
+
+QPushButton#recommendationFeedbackButton:hover {
+    color: #e3ddff;
+    background-color: #252332;
+    border: 1px solid #625a99;
+}
+
+QFrame#recommendationsEmptyState {
+    background-color: #15171d;
+    border: 1px dashed #514b82;
+    border-radius: 12px;
+    min-width: 650px;
+    min-height: 110px;
+}
+"""

@@ -14,7 +14,7 @@ class MediaLibraryRepository:
             row = connection.execute(
                 """
                 SELECT media_type, tmdb_id, title, year, overview, poster_path,
-                       status, favourite, created_at, updated_at
+                       is_anime, status, favourite, created_at, updated_at
                 FROM media_library
                 WHERE media_type = ? AND tmdb_id = ?
                 """,
@@ -45,7 +45,7 @@ class MediaLibraryRepository:
             rows = connection.execute(
                 f"""
                 SELECT media_type, tmdb_id, title, year, overview, poster_path,
-                       status, favourite, created_at, updated_at
+                       is_anime, status, favourite, created_at, updated_at
                 FROM media_library
                 {where}
                 ORDER BY updated_at DESC, title COLLATE NOCASE ASC
@@ -71,14 +71,15 @@ class MediaLibraryRepository:
                 """
                 INSERT INTO media_library (
                     media_type, tmdb_id, title, year, overview, poster_path,
-                    status, favourite, updated_at
+                    is_anime, status, favourite, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                 ON CONFLICT(media_type, tmdb_id) DO UPDATE SET
                     title = excluded.title,
                     year = excluded.year,
                     overview = excluded.overview,
                     poster_path = excluded.poster_path,
+                    is_anime = COALESCE(excluded.is_anime, media_library.is_anime),
                     status = excluded.status,
                     favourite = excluded.favourite,
                     updated_at = CURRENT_TIMESTAMP
@@ -90,6 +91,7 @@ class MediaLibraryRepository:
                     media.year,
                     media.overview,
                     media.poster_path,
+                    None if media.is_anime is None else (1 if media.is_anime else 0),
                     status,
                     1 if favourite_value else 0,
                 ),
@@ -99,6 +101,25 @@ class MediaLibraryRepository:
         if entry is None:  # pragma: no cover - defensive database boundary.
             raise RuntimeError("Media library entry was not saved.")
         return entry
+
+
+    def set_is_anime(
+        self,
+        media_type: MediaType,
+        tmdb_id: int,
+        is_anime: bool,
+    ) -> MediaLibraryEntry | None:
+        self.database.initialise()
+        with self.database.connect() as connection:
+            connection.execute(
+                """
+                UPDATE media_library
+                SET is_anime = ?
+                WHERE media_type = ? AND tmdb_id = ?
+                """,
+                (1 if is_anime else 0, media_type, tmdb_id),
+            )
+        return self.get(media_type, tmdb_id)
 
     def set_favourite(
         self,
@@ -136,6 +157,7 @@ class MediaLibraryRepository:
             year=row["year"],
             overview=row["overview"],
             poster_path=row["poster_path"],
+            is_anime=(None if row["is_anime"] is None else bool(row["is_anime"])),
             status=row["status"],
             favourite=bool(row["favourite"]),
             created_at=row["created_at"],

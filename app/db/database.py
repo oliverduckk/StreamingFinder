@@ -35,6 +35,7 @@ class SQLiteDatabase:
                     year INTEGER,
                     overview TEXT,
                     poster_path TEXT,
+                    is_anime INTEGER CHECK (is_anime IN (0, 1) OR is_anime IS NULL),
                     status TEXT NOT NULL CHECK (
                         status IN ('watchlist', 'watching', 'watched', 'dropped')
                     ),
@@ -45,6 +46,15 @@ class SQLiteDatabase:
                 )
                 """
             )
+            media_library_columns = {
+                row["name"]
+                for row in connection.execute("PRAGMA table_info(media_library)").fetchall()
+            }
+            if "is_anime" not in media_library_columns:
+                connection.execute(
+                    "ALTER TABLE media_library ADD COLUMN is_anime INTEGER "
+                    "CHECK (is_anime IN (0, 1) OR is_anime IS NULL)"
+                )
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS media_ratings (
@@ -68,6 +78,17 @@ class SQLiteDatabase:
                     FOREIGN KEY (media_type, tmdb_id)
                         REFERENCES media_ratings(media_type, tmdb_id)
                         ON DELETE CASCADE
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS recommendation_dismissals (
+                    media_type TEXT NOT NULL CHECK (media_type IN ('movie', 'tv')),
+                    tmdb_id INTEGER NOT NULL,
+                    title TEXT NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (media_type, tmdb_id)
                 )
                 """
             )

@@ -1,40 +1,57 @@
-# StreamingFinder
+# StreamingFinder V0.12.3 — Anime Library Filter + Recommendation Discovery Modes
 
-StreamingFinder is a local desktop application and API for finding where movies and TV shows are available to stream by service and country, while building a personal media library and structured rating history.
+V0.12.3 focuses on two issues found during real use: the Library needed the same anime/live-action split as Recommendations, and live-action TV recommendations were still surfacing too many obscure titles by default.
 
-## V0.9
+## Library changes
 
-V0.9 adds the first dedicated Library screen to the desktop application.
+The Library content filter is now:
 
-The top-level desktop navigation now contains **Search** and **Library**. The Library view reads directly from the local SQLite database and displays saved movies and TV series as poster cards with their library status, favourite state, and personal `/100` rating when available.
+```text
+Everything
+Movies
+TV series (live action)
+Anime
+```
 
-Library browsing supports:
+Anime includes both anime films and anime series. Movies and TV series exclude titles classified as anime.
 
-- text filtering by title
-- status filtering: Watchlist, Watching, Watched, Dropped
-- media filtering: Movies or TV series
-- favourites-only filtering
-- sorting by recently updated, highest rated, title A-Z, or release year
-- opening any saved title back into the full details/streaming-availability view
+New TMDB search results are classified immediately using original language + Animation genre metadata. Existing library rows are lazily classified the first time the Library is opened after upgrading, then the result is persisted in SQLite so this is a one-time backfill rather than a repeated network cost.
 
-The library remains fully local in `data/streaming_finder.db`; personal library and rating data are not committed to Git.
+## Recommendation discovery styles
 
-## Rating system
+Recommendations now include a second selector:
 
-Each movie or TV series can be scored across ten categories, each out of 10, for an overall score out of 100:
+```text
+Familiar
+Balanced
+Hidden gems
+```
 
-1. Story
-2. Characters
-3. Dialogue
-4. Visuals
-5. Soundtrack
-6. Worldbuilding
-7. Direction
-8. Pacing
-9. Emotional Impact
-10. Enjoyment
+**Familiar** is the desktop default. It favours titles with stronger TMDB audience/popularity evidence and uses popularity-sorted discovery, so live-action TV should lean toward recognisable candidates rather than tiny-vote curiosities.
 
-Scores use 0.5-point increments and support optional personal notes.
+**Balanced** keeps a wider candidate pool while still applying quality floors.
+
+**Hidden gems** deliberately permits much smaller TMDB audiences when you want obscure recommendations.
+
+The recommendation scorer also now:
+
+- reduces the influence of extremely generic genres that appear across most of the user's rated titles;
+- scales TMDB seed/consensus bonuses by actual metadata alignment, so a weird TMDB "similar" link cannot dominate on its own;
+- uses stricter vote-confidence thresholds in Familiar mode;
+- adds a familiarity signal from TMDB vote count/popularity;
+- preserves positive/negative taste modelling, franchise diversity, anime/live-action separation, watch-history exclusion and streaming-service filtering.
+
+The displayed Match score is still a deterministic local ranking score, not a probability of enjoyment.
+
+## API
+
+```text
+GET /api/v1/recommendations?media_type=tv&discovery_mode=familiar
+GET /api/v1/recommendations?media_type=anime&discovery_mode=balanced
+GET /api/v1/recommendations?media_type=movie&discovery_mode=hidden
+```
+
+`discovery_mode` accepts `familiar`, `balanced`, or `hidden`.
 
 ## Run
 
@@ -44,4 +61,9 @@ pytest
 python -m app.desktop
 ```
 
-TMDB metadata is used under TMDB's API terms. Streaming availability data is supplied by JustWatch via TMDB and requires appropriate attribution in the UI.
+Expected test result for this patch: **61 passed**.
+
+## Attribution
+
+This product uses the TMDB API but is not endorsed or certified by TMDB.  
+Streaming availability data is provided by JustWatch via TMDB and requires JustWatch attribution when displayed.

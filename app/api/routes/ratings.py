@@ -1,14 +1,19 @@
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 
-from app.api.dependencies import get_ratings_repository
+from app.api.dependencies import get_library_repository, get_ratings_repository
 from app.models.media import (
     MediaRating,
     MediaRatingSaveRequest,
     MediaType,
     RatingCategoryDefinition,
+    RatingsDashboard,
+    TasteProfile,
 )
+from app.repositories.library import MediaLibraryRepository
 from app.repositories.ratings import MediaRatingRepository
 from app.services.rating_system import RATING_CATEGORIES
+from app.services.ratings_dashboard import build_ratings_dashboard
+from app.services.taste_profile import build_taste_profile
 
 router = APIRouter(prefix="/api/v1/ratings", tags=["ratings"])
 
@@ -27,6 +32,28 @@ def list_ratings(
     repository: MediaRatingRepository = Depends(get_ratings_repository),
 ) -> list[MediaRating]:
     return repository.list(media_type=media_type)
+
+
+@router.get("/dashboard", response_model=RatingsDashboard)
+def get_ratings_dashboard(
+    ratings_repository: MediaRatingRepository = Depends(get_ratings_repository),
+    library_repository: MediaLibraryRepository = Depends(get_library_repository),
+) -> RatingsDashboard:
+    return build_ratings_dashboard(
+        ratings_repository.list(),
+        library_repository.list(),
+    )
+
+
+@router.get("/taste-profile", response_model=TasteProfile)
+def get_taste_profile(
+    ratings_repository: MediaRatingRepository = Depends(get_ratings_repository),
+    library_repository: MediaLibraryRepository = Depends(get_library_repository),
+) -> TasteProfile:
+    return build_taste_profile(
+        ratings_repository.list(),
+        library_repository.list(),
+    )
 
 
 @router.get("/{media_type}/{tmdb_id}", response_model=MediaRating)

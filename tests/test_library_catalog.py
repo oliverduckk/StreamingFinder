@@ -11,6 +11,7 @@ def entry(
     favourite: bool = False,
     year: int | None = 2000,
     updated_at: str = "2026-01-01 00:00:00",
+    is_anime: bool | None = None,
 ) -> MediaLibraryEntry:
     return MediaLibraryEntry(
         media_type=media_type,
@@ -19,6 +20,7 @@ def entry(
         year=year,
         overview=None,
         poster_path=None,
+        is_anime=is_anime,
         status=status,
         favourite=favourite,
         created_at="2026-01-01 00:00:00",
@@ -101,3 +103,25 @@ def test_rating_totals_builds_media_identity_lookup() -> None:
     totals = rating_totals([rating("Alien", 1, 96.0), rating("Arrival", 2, 91.5)])
 
     assert totals == {("movie", 1): 96.0, ("movie", 2): 91.5}
+
+
+def test_content_filter_separates_anime_from_live_action_movies_and_tv() -> None:
+    entries = [
+        entry("Interstellar", 1, media_type="movie", is_anime=False),
+        entry("Paprika", 2, media_type="movie", is_anime=True),
+        entry("Breaking Bad", 3, media_type="tv", is_anime=False),
+        entry("Attack on Titan", 4, media_type="tv", is_anime=True),
+    ]
+
+    assert [item.title for item in prepare_library_entries(entries, content_filter="movie")] == [
+        "Interstellar"
+    ]
+    assert [item.title for item in prepare_library_entries(entries, content_filter="tv")] == [
+        "Breaking Bad"
+    ]
+    assert [
+        item.title
+        for item in prepare_library_entries(
+            entries, content_filter="anime", sort_by="title"
+        )
+    ] == ["Attack on Titan", "Paprika"]

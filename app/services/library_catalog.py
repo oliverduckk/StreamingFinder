@@ -4,6 +4,7 @@ from typing import Literal
 from app.models.media import LibraryStatus, MediaLibraryEntry, MediaRating, MediaType
 
 LibrarySort = Literal["recent", "rating", "title", "year"]
+LibraryContentFilter = Literal["all", "movie", "tv", "anime"]
 
 
 def rating_totals(ratings: Iterable[MediaRating]) -> dict[tuple[MediaType, int], float]:
@@ -17,6 +18,7 @@ def prepare_library_entries(
     query: str = "",
     status: LibraryStatus | None = None,
     media_type: MediaType | None = None,
+    content_filter: LibraryContentFilter = "all",
     favourite_only: bool = False,
     sort_by: LibrarySort = "recent",
     ratings: dict[tuple[MediaType, int], float] | None = None,
@@ -29,6 +31,7 @@ def prepare_library_entries(
         if (not normalized_query or normalized_query in entry.title.casefold())
         and (status is None or entry.status == status)
         and (media_type is None or entry.media_type == media_type)
+        and _matches_content_filter(entry, content_filter)
         and (not favourite_only or entry.favourite)
     ]
 
@@ -56,3 +59,18 @@ def prepare_library_entries(
         key=lambda entry: (entry.updated_at, entry.title.casefold()),
         reverse=True,
     )
+
+
+def _matches_content_filter(
+    entry: MediaLibraryEntry,
+    content_filter: LibraryContentFilter,
+) -> bool:
+    if content_filter == "all":
+        return True
+    if content_filter == "anime":
+        return entry.is_anime is True
+    if content_filter == "movie":
+        return entry.media_type == "movie" and entry.is_anime is not True
+    if content_filter == "tv":
+        return entry.media_type == "tv" and entry.is_anime is not True
+    raise ValueError(f"Unknown library content filter: {content_filter}")
