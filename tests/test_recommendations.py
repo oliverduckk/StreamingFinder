@@ -342,3 +342,339 @@ def test_familiar_mode_requires_more_audience_confidence_than_balanced() -> None
 
     assert _passes_candidate_quality_gate(candidate, 1, "tv", "balanced") is True
     assert _passes_candidate_quality_gate(candidate, 1, "tv", "familiar") is False
+
+
+def test_mixed_anime_diversity_preserves_movies_and_series() -> None:
+    from app.models.media import RecommendationItem
+    from app.services.recommendations import diversify_recommendations
+
+    def item(media_type: str, tmdb_id: int, score: float) -> RecommendationItem:
+        return RecommendationItem(
+            media_type=media_type,
+            tmdb_id=tmdb_id,
+            title=f"{media_type}-{tmdb_id}",
+            match_score=score,
+            tmdb_vote_average=8.0,
+            tmdb_vote_count=5000,
+            seed_titles=[],
+            reasons=[],
+            genre_names=["Animation", "Drama"],
+            providers=[],
+        )
+
+    ranked = [
+        *(item("movie", index, 100.0 - index) for index in range(1, 13)),
+        *(item("tv", 100 + index, 75.0 - index) for index in range(1, 13)),
+    ]
+
+    diversified = diversify_recommendations(
+        ranked,
+        limit=12,
+        media_filter="anime",
+    )
+
+    assert len(diversified) == 12
+    assert sum(entry.media_type == "movie" for entry in diversified) == 6
+    assert sum(entry.media_type == "tv" for entry in diversified) == 6
+
+
+def test_mixed_anime_diversity_uses_available_capacity_when_one_side_is_small() -> None:
+    from app.models.media import RecommendationItem
+    from app.services.recommendations import diversify_recommendations
+
+    def item(media_type: str, tmdb_id: int, score: float) -> RecommendationItem:
+        return RecommendationItem(
+            media_type=media_type,
+            tmdb_id=tmdb_id,
+            title=f"{media_type}-{tmdb_id}",
+            match_score=score,
+            tmdb_vote_average=8.0,
+            tmdb_vote_count=5000,
+            seed_titles=[],
+            reasons=[],
+            genre_names=["Animation"],
+            providers=[],
+        )
+
+    ranked = [
+        *(item("movie", index, 90.0 - index) for index in range(1, 13)),
+        item("tv", 201, 70.0),
+        item("tv", 202, 69.0),
+    ]
+
+    diversified = diversify_recommendations(
+        ranked,
+        limit=12,
+        media_filter="anime",
+    )
+
+    assert len(diversified) == 12
+    assert sum(entry.media_type == "tv" for entry in diversified) == 2
+    assert sum(entry.media_type == "movie" for entry in diversified) == 10
+
+class FakeMixedAnimeTMDB:
+    async def get_media_features(self, media_type: str, tmdb_id: int):
+        from app.models.media import MediaFeatureProfile
+
+        return MediaFeatureProfile(
+            media_type=media_type,
+            tmdb_id=tmdb_id,
+            genre_ids=[16, 18],
+            genre_names=["Animation", "Drama"],
+            original_language="ja",
+            is_anime=True,
+        )
+
+    async def get_related_media(self, media_type: str, tmdb_id: int):
+        base = 1000 if media_type == "movie" else 2000
+        return [
+            RecommendationCandidate(
+                tmdb_id=base + offset,
+                media_type=media_type,
+                title=f"{media_type} anime {offset}",
+                year=2024,
+                vote_average=8.0 - offset * 0.1,
+                vote_count=5000 - offset * 100,
+                popularity=100.0 - offset,
+                genre_ids=[16, 18],
+                original_language="ja",
+                is_anime=True,
+            )
+            for offset in range(1, 5)
+        ]
+
+    async def get_subscription_providers(self, media_type: str, tmdb_id: int, service_keys=None):
+        return []
+
+
+@pytest.mark.anyio
+async def test_mixed_anime_runs_independent_movie_and_series_pipelines(tmp_path: Path) -> None:
+    database = SQLiteDatabase(tmp_path / "mixed-anime.db")
+    library = MediaLibraryRepository(database)
+    ratings = MediaRatingRepository(database)
+    preferences = StreamingPreferencesRepository(database)
+
+    movie_seed = MediaSearchResult(
+        tmdb_id=11,
+        media_type="movie",
+        title="Anime Movie Seed",
+        year=2020,
+        is_anime=True,
+    )
+    tv_seed = MediaSearchResult(
+        tmdb_id=22,
+        media_type="tv",
+        title="Anime Series Seed",
+        year=2021,
+        is_anime=True,
+    )
+    library.upsert(movie_seed, "watched", favourite=True)
+    library.upsert(tv_seed, "watched", favourite=True)
+    ratings.upsert(
+        "movie",
+        11,
+        {category.key: 9.0 for category in RATING_CATEGORIES},
+        notes=None,
+    )
+    ratings.upsert(
+        "tv",
+        22,
+        {category.key: 9.0 for category in RATING_CATEGORIES},
+        notes=None,
+    )
+
+    service = RecommendationService(
+        FakeMixedAnimeTMDB(),
+        library,
+        ratings,
+        preferences,
+    )
+    response = await service.recommend(
+        media_type="anime",
+        limit=4,
+        only_my_services=False,
+        discovery_mode="familiar",
+    )
+
+    assert len(response.items) == 4
+    assert sum(item.media_type == "movie" for item in response.items) == 2
+    assert sum(item.media_type == "tv" for item in response.items) == 2
+    assert "2 series and 2 movie" in response.message
+
+class FakePagedAnimeSeriesTMDB:
+    def __init__(self) -> None:
+        self.discover_pages: list[int] = []
+
+    async def get_media_features(self, media_type: str, tmdb_id: int):
+        from app.models.media import MediaFeatureProfile
+
+        return MediaFeatureProfile(
+            media_type=media_type,
+            tmdb_id=tmdb_id,
+            genre_ids=[16, 18],
+            genre_names=["Animation", "Drama"],
+            original_language="ja",
+            is_anime=True,
+        )
+
+    async def get_related_media(self, media_type: str, tmdb_id: int):
+        return []
+
+    async def discover_media(self, media_type: str, genre_ids: list[int], *, page: int = 1, **kwargs):
+        self.discover_pages.append(page)
+        if page == 1:
+            ids = [5001, 5002]
+        elif page == 2:
+            ids = [6001, 6002, 6003, 6004]
+        else:
+            ids = []
+        return [
+            RecommendationCandidate(
+                tmdb_id=tmdb_id,
+                media_type="tv",
+                title=f"Anime series {tmdb_id}",
+                year=2024,
+                vote_average=8.0,
+                vote_count=1500,
+                popularity=80.0,
+                genre_ids=[16, 18],
+                original_language="ja",
+                is_anime=True,
+            )
+            for tmdb_id in ids
+        ]
+
+    async def get_subscription_providers(self, media_type: str, tmdb_id: int, service_keys=None):
+        return []
+
+
+@pytest.mark.anyio
+async def test_anime_series_discovery_pages_past_already_watched_results(tmp_path: Path) -> None:
+    database = SQLiteDatabase(tmp_path / "anime-pages.db")
+    library = MediaLibraryRepository(database)
+    ratings = MediaRatingRepository(database)
+    preferences = StreamingPreferencesRepository(database)
+
+    seed = MediaSearchResult(
+        tmdb_id=22,
+        media_type="tv",
+        title="Anime Series Seed",
+        year=2021,
+        is_anime=True,
+    )
+    library.upsert(seed, "watched", favourite=True)
+    ratings.upsert(
+        "tv",
+        22,
+        {category.key: 9.0 for category in RATING_CATEGORIES},
+        notes=None,
+    )
+
+    # Simulate a mature library that has already consumed page 1 of familiar anime.
+    for tmdb_id in (5001, 5002):
+        library.upsert(
+            MediaSearchResult(
+                tmdb_id=tmdb_id,
+                media_type="tv",
+                title=f"Already watched {tmdb_id}",
+                year=2020,
+                is_anime=True,
+            ),
+            "watched",
+        )
+
+    tmdb = FakePagedAnimeSeriesTMDB()
+    service = RecommendationService(tmdb, library, ratings, preferences)
+    response = await service.recommend(
+        media_type="anime_tv",
+        limit=4,
+        only_my_services=False,
+        discovery_mode="familiar",
+    )
+
+    assert 1 in tmdb.discover_pages
+    assert 2 in tmdb.discover_pages
+    assert len(response.items) == 4
+    assert {item.tmdb_id for item in response.items} == {6001, 6002, 6003, 6004}
+    assert all(item.media_type == "tv" for item in response.items)
+
+class FakeBroadAnimeDiscoveryTMDB:
+    def __init__(self) -> None:
+        self.discovery_calls: list[tuple[str, tuple[int, ...], int]] = []
+
+    async def get_media_features(self, media_type: str, tmdb_id: int):
+        from app.models.media import MediaFeatureProfile
+
+        return MediaFeatureProfile(
+            media_type=media_type,
+            tmdb_id=tmdb_id,
+            genre_ids=[16, 18],
+            genre_names=["Animation", "Drama"],
+            original_language="ja",
+            is_anime=True,
+        )
+
+    async def get_related_media(self, media_type: str, tmdb_id: int):
+        return []
+
+    async def discover_media(self, media_type: str, genre_ids: list[int], *, page: int = 1, **kwargs):
+        self.discovery_calls.append((media_type, tuple(genre_ids), page))
+        # Reproduce the real bug: narrow taste-genre searches find nothing,
+        # while the broad Japanese Animation catalogue contains healthy candidates.
+        if genre_ids or page != 1:
+            return []
+        return [
+            RecommendationCandidate(
+                tmdb_id=7000 + index,
+                media_type="tv",
+                title=f"Broad anime {index}",
+                year=2024,
+                vote_average=8.0,
+                vote_count=1500,
+                popularity=100.0 - index,
+                genre_ids=[16, 18],
+                original_language="ja",
+                is_anime=True,
+            )
+            for index in range(1, 5)
+        ]
+
+    async def get_subscription_providers(self, media_type: str, tmdb_id: int, service_keys=None):
+        return []
+
+
+@pytest.mark.anyio
+async def test_anime_series_includes_broad_japanese_animation_discovery(tmp_path: Path) -> None:
+    database = SQLiteDatabase(tmp_path / "anime-broad.db")
+    library = MediaLibraryRepository(database)
+    ratings = MediaRatingRepository(database)
+    preferences = StreamingPreferencesRepository(database)
+
+    seed = MediaSearchResult(
+        tmdb_id=22,
+        media_type="tv",
+        title="Anime Series Seed",
+        year=2021,
+        is_anime=True,
+    )
+    library.upsert(seed, "watched", favourite=True)
+    ratings.upsert(
+        "tv",
+        22,
+        {category.key: 9.0 for category in RATING_CATEGORIES},
+        notes=None,
+    )
+
+    tmdb = FakeBroadAnimeDiscoveryTMDB()
+    service = RecommendationService(tmdb, library, ratings, preferences)
+    response = await service.recommend(
+        media_type="anime_tv",
+        limit=4,
+        only_my_services=False,
+        discovery_mode="familiar",
+    )
+
+    assert any(genres == () for _, genres, _ in tmdb.discovery_calls)
+    assert len(response.items) == 4
+    assert {item.tmdb_id for item in response.items} == {7001, 7002, 7003, 7004}
+    assert all(item.media_type == "tv" for item in response.items)

@@ -11,7 +11,7 @@ router = APIRouter(prefix="/api/v1", tags=["recommendations"])
 
 @router.get("/recommendations", response_model=RecommendationResponse)
 async def get_recommendations(
-    media_type: Literal["all", "movie", "tv", "anime"] = Query(default="all"),
+    media_type: Literal["all", "movie", "tv", "anime", "anime_movie", "anime_tv"] = Query(default="all"),
     limit: int = Query(default=12, ge=1, le=24),
     only_my_services: bool = Query(default=True),
     discovery_mode: Literal["familiar", "balanced", "hidden"] = Query(default="balanced"),

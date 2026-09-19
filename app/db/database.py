@@ -83,6 +83,25 @@ class SQLiteDatabase:
             )
             connection.execute(
                 """
+                CREATE TABLE IF NOT EXISTS media_feature_cache (
+                    media_type TEXT NOT NULL CHECK (media_type IN ('movie', 'tv')),
+                    tmdb_id INTEGER NOT NULL,
+                    genre_ids_json TEXT NOT NULL DEFAULT '[]',
+                    genre_names_json TEXT NOT NULL DEFAULT '[]',
+                    keyword_ids_json TEXT NOT NULL DEFAULT '[]',
+                    keyword_names_json TEXT NOT NULL DEFAULT '[]',
+                    collection_id INTEGER,
+                    collection_name TEXT,
+                    creators_json TEXT NOT NULL DEFAULT '[]',
+                    original_language TEXT,
+                    is_anime INTEGER NOT NULL DEFAULT 0 CHECK (is_anime IN (0, 1)),
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (media_type, tmdb_id)
+                )
+                """
+            )
+            connection.execute(
+                """
                 CREATE TABLE IF NOT EXISTS recommendation_dismissals (
                     media_type TEXT NOT NULL CHECK (media_type IN ('movie', 'tv')),
                     tmdb_id INTEGER NOT NULL,

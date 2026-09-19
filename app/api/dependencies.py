@@ -4,9 +4,11 @@ from app.clients.tmdb import TMDBClient
 from app.core.config import Settings, get_settings
 from app.db.database import SQLiteDatabase
 from app.repositories.dismissals import RecommendationDismissalRepository
+from app.repositories.features import MediaFeatureRepository
 from app.repositories.library import MediaLibraryRepository
 from app.repositories.preferences import StreamingPreferencesRepository
 from app.repositories.ratings import MediaRatingRepository
+from app.services.media_metadata import MediaMetadataService
 from app.services.recommendations import RecommendationService
 
 
@@ -44,11 +46,32 @@ def get_dismissals_repository(
     return RecommendationDismissalRepository(SQLiteDatabase(settings.database_path))
 
 
+def get_features_repository(
+    settings: Settings = Depends(get_settings),
+) -> MediaFeatureRepository:
+    return MediaFeatureRepository(SQLiteDatabase(settings.database_path))
+
+
+def get_media_metadata_service(
+    tmdb: TMDBClient = Depends(get_tmdb_client),
+    features: MediaFeatureRepository = Depends(get_features_repository),
+) -> MediaMetadataService:
+    return MediaMetadataService(tmdb, features)
+
+
 def get_recommendation_service(
     tmdb: TMDBClient = Depends(get_tmdb_client),
     library: MediaLibraryRepository = Depends(get_library_repository),
     ratings: MediaRatingRepository = Depends(get_ratings_repository),
     preferences: StreamingPreferencesRepository = Depends(get_preferences_repository),
     dismissals: RecommendationDismissalRepository = Depends(get_dismissals_repository),
+    metadata: MediaMetadataService = Depends(get_media_metadata_service),
 ) -> RecommendationService:
-    return RecommendationService(tmdb, library, ratings, preferences, dismissals)
+    return RecommendationService(
+        tmdb,
+        library,
+        ratings,
+        preferences,
+        dismissals,
+        metadata=metadata,
+    )

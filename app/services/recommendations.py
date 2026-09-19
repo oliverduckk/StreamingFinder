@@ -21,8 +21,10 @@ from app.repositories.dismissals import RecommendationDismissalRepository
 from app.repositories.library import MediaLibraryRepository
 from app.repositories.preferences import StreamingPreferencesRepository
 from app.repositories.ratings import MediaRatingRepository
+from app.services.media_metadata import MediaMetadataService
+from app.services.metadata_taste import build_weighted_feature_inputs
 
-RecommendationMediaFilter = Literal["all", "movie", "tv", "anime"]
+RecommendationMediaFilter = Literal["all", "movie", "tv", "anime", "anime_movie", "anime_tv"]
 RecommendationDiscoveryMode = Literal["familiar", "balanced", "hidden"]
 ANIMATION_GENRE_ID = 16
 
@@ -101,12 +103,15 @@ class RecommendationService:
         ratings: MediaRatingRepository,
         preferences: StreamingPreferencesRepository,
         dismissals: RecommendationDismissalRepository | None = None,
+        *,
+        metadata: MediaMetadataService | None = None,
     ) -> None:
         self.tmdb = tmdb
         self.library = library
         self.ratings = ratings
         self.preferences = preferences
         self.dismissals = dismissals
+        self.metadata = metadata
         self._feature_cache: dict[tuple[str, int], MediaFeatureProfile] = {}
 
     async def recommend(
@@ -118,16 +123,26 @@ class RecommendationService:
         discovery_mode: RecommendationDiscoveryMode = "balanced",
     ) -> RecommendationResponse:
         limit = max(1, min(int(limit), 24))
+        if media_type == "anime":
+            return await self._recommend_mixed_anime(
+                limit=limit,
+                only_my_services=only_my_services,
+                discovery_mode=discovery_mode,
+            )
+
         ratings = self.ratings.list()
         library_entries = self.library.list()
 
         # TV and anime share TMDB's "tv" media type, so pull a broader signal
         # pool first, classify it using TMDB metadata, then build a subtype-specific
         # taste model. This stops a large anime library from hijacking live-action TV.
-        signal_media_type: RecommendationMediaFilter = (
-            "all" if media_type == "anime" else media_type
-        )
-        signal_pool = 24 if media_type in {"tv", "anime"} else 12
+        if media_type == "anime_movie":
+            signal_media_type: RecommendationMediaFilter = "movie"
+        elif media_type == "anime_tv":
+            signal_media_type = "tv"
+        else:
+            signal_media_type = media_type
+        signal_pool = 24 if media_type in {"tv", "anime_movie", "anime_tv"} else 12
         raw_seeds = select_recommendation_seeds(
             ratings,
             library_entries,
@@ -138,7 +153,7 @@ class RecommendationService:
             ratings,
             library_entries,
             media_type=signal_media_type,
-            limit=16 if media_type in {"tv", "anime"} else 8,
+            limit=16 if media_type in {"tv", "anime_movie", "anime_tv"} else 8,
         )
 
         if not raw_seeds:
@@ -184,7 +199,11 @@ class RecommendationService:
         seeds = seeds[:10]
         negatives = negatives[:8]
         if not seeds:
-            subtype = "live-action TV" if media_type == "tv" else "anime"
+            subtype = {
+                "tv": "live-action TV",
+                "anime_movie": "anime movie",
+                "anime_tv": "anime series",
+            }.get(media_type, "matching")
             return RecommendationResponse(
                 media_filter=media_type,
                 discovery_mode=discovery_mode,
@@ -196,6 +215,8 @@ class RecommendationService:
             )
 
         # Rebuild the weighted model from the signals that survived subtype filtering.
+        # V0.13 then broadens this with continuous signals from the full rated history,
+        # so one favourite franchise cannot define the user's entire metadata profile.
         allowed_keys = {
             (item.media_type, item.tmdb_id) for item in [*seeds, *negatives]
         }
@@ -204,11 +225,41 @@ class RecommendationService:
             for weight, feature in weighted_features
             if (feature.media_type, feature.tmdb_id) in allowed_keys
         ]
+
+        history_ratings = [
+            rating
+            for rating in ratings
+            if media_type == "all"
+            or (media_type == "anime_movie" and rating.media_type == "movie")
+            or (media_type == "anime_tv" and rating.media_type == "tv")
+            or rating.media_type == media_type
+        ]
+        history_results = await asyncio.gather(
+            *(self._get_features(rating.media_type, rating.tmdb_id) for rating in history_ratings),
+            return_exceptions=True,
+        )
+        history_features: dict[tuple[str, int], MediaFeatureProfile] = {}
+        for rating, result in zip(history_ratings, history_results, strict=True):
+            if isinstance(result, Exception):
+                continue
+            if not _feature_matches_filter(result, media_type):
+                continue
+            history_features[(rating.media_type, rating.tmdb_id)] = result
+
+        full_history_weights = build_weighted_feature_inputs(
+            ratings,
+            library_entries,
+            history_features,
+        )
+        if len(full_history_weights) >= 4:
+            weighted_features = full_history_weights
+
         taste_model = build_feature_taste_model(weighted_features)
+        seed_source = seeds
         active_seeds = diversify_recommendation_seeds(
-            seeds,
+            seed_source,
             features_for_signals,
-            limit=min(8, len(seeds)),
+            limit=min(8, len(seed_source)),
         )
 
         candidate_batches = await asyncio.gather(
@@ -230,29 +281,52 @@ class RecommendationService:
                 accumulator.seeds[(seed.media_type, seed.tmdb_id)] = seed
 
         discover_types: list[Literal["movie", "tv"]]
-        if media_type in {"all", "anime"}:
+        if media_type == "all":
             discover_types = ["movie", "tv"]
+        elif media_type == "anime_movie":
+            discover_types = ["movie"]
+        elif media_type == "anime_tv":
+            discover_types = ["tv"]
         else:
             discover_types = [media_type]
         if hasattr(self.tmdb, "discover_media"):
-            discovery_requests = [
-                (
-                    kind,
-                    top_positive_genres_for_media(
-                        weighted_features,
-                        kind,
-                        limit=4,
-                    ),
-                )
-                for kind in discover_types
-            ]
-            discovery_requests = [
-                (kind, genres)
-                for kind, genres in discovery_requests
-                if genres
-            ]
             discovery_jobs = []
-            for kind, genres in discovery_requests:
+            subtype_history_size = len(history_features)
+            discovery_pages = _discovery_pages(
+                media_type,
+                discovery_mode,
+                subtype_history_size=subtype_history_size,
+            )
+
+            # Anime needs a broader discovery pool than ordinary movie/TV modes.
+            # TMDB stores anime series as generic TV and anime films as generic
+            # movies, so relying only on the user's strongest genre combination can
+            # become far too restrictive once a mature library has already consumed
+            # the obvious titles. For anime subtypes we therefore run:
+            #   1. a broad Japanese Animation query across all discovery pages; and
+            #   2. several single-genre taste queries on page 1.
+            # The local taste model still decides the final ranking.
+            discovery_requests: list[tuple[Literal["movie", "tv"], list[int], list[int]]] = []
+            for kind in discover_types:
+                genres = top_positive_genres_for_media(
+                    weighted_features,
+                    kind,
+                    limit=4,
+                )
+                if media_type in {"anime_movie", "anime_tv"}:
+                    discovery_requests.append((kind, [], discovery_pages))
+                    taste_genres = [
+                        genre_id
+                        for genre_id in genres
+                        if genre_id != ANIMATION_GENRE_ID
+                    ][:3]
+                    discovery_requests.extend(
+                        (kind, [genre_id], [1]) for genre_id in taste_genres
+                    )
+                elif genres:
+                    discovery_requests.append((kind, genres, discovery_pages))
+
+            for kind, genres, pages in discovery_requests:
                 kwargs: dict[str, object] = {
                     "sort_by": (
                         "popularity.desc"
@@ -260,7 +334,7 @@ class RecommendationService:
                         else "vote_average.desc"
                     )
                 }
-                if media_type == "anime":
+                if media_type in {"anime_movie", "anime_tv"}:
                     kwargs.update(
                         original_language="ja",
                         required_genre_id=ANIMATION_GENRE_ID,
@@ -284,7 +358,10 @@ class RecommendationService:
                         "balanced": 350,
                         "hidden": 50,
                     }[discovery_mode]
-                discovery_jobs.append(self.tmdb.discover_media(kind, genres, **kwargs))
+                for page in pages:
+                    discovery_jobs.append(
+                        self.tmdb.discover_media(kind, genres, page=page, **kwargs)
+                    )
 
             discovered_batches = await asyncio.gather(
                 *discovery_jobs,
@@ -320,7 +397,8 @@ class RecommendationService:
 
         # Enrich only the strongest candidates. Metadata is cached for the life
         # of the app, so repeated recommendation runs become substantially faster.
-        enrichment_pool = preliminary[: min(max(limit * 2, 18), 24)]
+        enrichment_limit = min(max(limit * 2, 18), 24)
+        enrichment_pool = preliminary[:enrichment_limit]
         enrichment_results = await asyncio.gather(
             *(
                 self._get_features(item.media_type, item.tmdb_id)
@@ -344,7 +422,11 @@ class RecommendationService:
             discovery_mode=discovery_mode,
         )
         pool_limit = min(max(limit * 2, 18), 24)
-        pool = diversify_recommendations(ranked, limit=pool_limit)
+        pool = diversify_recommendations(
+            ranked,
+            limit=pool_limit,
+            media_filter=media_type,
+        )
 
         enabled_services = set(self.preferences.get_enabled_services())
         if only_my_services and not enabled_services:
@@ -386,9 +468,17 @@ class RecommendationService:
                 for result in results
                 if isinstance(result, RecommendationItem) and result.providers
             ]
-            items = diversify_recommendations(available, limit=limit)
+            items = diversify_recommendations(
+                available,
+                limit=limit,
+                media_filter=media_type,
+            )
         else:
-            items = diversify_recommendations(pool, limit=limit)
+            items = diversify_recommendations(
+                pool,
+                limit=limit,
+                media_filter=media_type,
+            )
 
         message = _response_message(
             count=len(items),
@@ -405,6 +495,66 @@ class RecommendationService:
             items=items,
         )
 
+    async def _recommend_mixed_anime(
+        self,
+        *,
+        limit: int,
+        only_my_services: bool,
+        discovery_mode: RecommendationDiscoveryMode,
+    ) -> RecommendationResponse:
+        """Build mixed anime from two independent subtype pipelines.
+
+        TMDB stores anime films as ``movie`` and anime series as ``tv``. Keeping
+        those pipelines separate until the final merge prevents one subtype from
+        erasing the other during candidate generation, metadata enrichment, or
+        availability filtering.
+        """
+        movie_response, tv_response = await asyncio.gather(
+            self.recommend(
+                media_type="anime_movie",
+                limit=limit,
+                only_my_services=only_my_services,
+                discovery_mode=discovery_mode,
+            ),
+            self.recommend(
+                media_type="anime_tv",
+                limit=limit,
+                only_my_services=only_my_services,
+                discovery_mode=discovery_mode,
+            ),
+        )
+
+        merged = sorted(
+            [*movie_response.items, *tv_response.items],
+            key=lambda item: (-item.match_score, -item.tmdb_vote_count, item.title.casefold()),
+        )
+        items = balance_media_type_mix(merged, limit=limit)
+        movie_count = sum(item.media_type == "movie" for item in items)
+        tv_count = sum(item.media_type == "tv" for item in items)
+
+        if items:
+            message = (
+                f"Found {len(items)} mixed anime recommendation(s): "
+                f"{tv_count} series and {movie_count} movie(s)."
+            )
+            if only_my_services:
+                message += " All are available on your selected services."
+        else:
+            message = (
+                "No mixed anime recommendations matched the current filters. "
+                "Try turning off Only my services or using Balanced discovery."
+            )
+
+        return RecommendationResponse(
+            media_filter="anime",
+            discovery_mode=discovery_mode,
+            only_my_services=only_my_services,
+            generated_from=movie_response.generated_from + tv_response.generated_from,
+            total_considered=movie_response.total_considered + tv_response.total_considered,
+            message=message,
+            items=items,
+        )
+
     async def _get_features(
         self,
         media_type: Literal["movie", "tv"],
@@ -414,7 +564,10 @@ class RecommendationService:
         cached = self._feature_cache.get(key)
         if cached is not None:
             return cached
-        result = await self.tmdb.get_media_features(media_type, tmdb_id)
+        if self.metadata is not None:
+            result = await self.metadata.get(media_type, tmdb_id)
+        else:
+            result = await self.tmdb.get_media_features(media_type, tmdb_id)
         self._feature_cache[key] = result
         return result
 
@@ -694,7 +847,7 @@ def rank_candidates(
                 is_anime=_candidate_is_anime(candidate.media),
             )
 
-        feature_score, positive_genres = _feature_match_score(taste_model, feature)
+        feature_score, positive_matches = _feature_match_score(taste_model, feature)
         alignment = max(0.25, min(1.0, (feature_score + 12.0) / 34.0))
         support_score = min(18.0, sum(seed.weight for seed in support) * 6.0) * alignment
         consensus = min(6.0, max(0, len(support) - 1) * 1.9) * alignment
@@ -731,7 +884,7 @@ def rank_candidates(
 
         reasons = _candidate_reasons(
             support=support,
-            positive_genres=positive_genres,
+            positive_matches=positive_matches,
             vote_average=candidate.vote_average,
             vote_count=candidate.vote_count,
             discovered=candidate.discovered,
@@ -769,12 +922,98 @@ def rank_candidates(
     )
 
 
+def balance_media_type_mix(items: list, *, limit: int) -> list:
+    """Preserve both movie and TV items when a mixed result set contains both.
+
+    The input is assumed to already be ranked best-to-worst. The helper keeps
+    roughly half the requested slots for each TMDB media type, then fills any
+    unused capacity from the strongest remaining entries. It is intentionally
+    generic so the same rule can be applied to seeds and recommendation items.
+    """
+    if limit <= 0:
+        return []
+    ranked = list(items)
+    if len(ranked) <= 1:
+        return ranked[:limit]
+
+    movies = [item for item in ranked if getattr(item, "media_type", None) == "movie"]
+    tv = [item for item in ranked if getattr(item, "media_type", None) == "tv"]
+    if not movies or not tv:
+        return ranked[:limit]
+
+    half = limit // 2
+    movie_target = min(len(movies), half)
+    tv_target = min(len(tv), half)
+    chosen_ids = {id(item) for item in movies[:movie_target]} | {
+        id(item) for item in tv[:tv_target]
+    }
+
+    remaining_slots = limit - len(chosen_ids)
+    if remaining_slots > 0:
+        for item in ranked:
+            if id(item) in chosen_ids:
+                continue
+            chosen_ids.add(id(item))
+            remaining_slots -= 1
+            if remaining_slots <= 0:
+                break
+
+    return [item for item in ranked if id(item) in chosen_ids][:limit]
+
+
 def diversify_recommendations(
     items: list[RecommendationItem],
     *,
     limit: int,
+    media_filter: RecommendationMediaFilter = "all",
 ) -> list[RecommendationItem]:
-    """Greedily select a varied list without lying about the displayed match score."""
+    """Greedily select a varied list without lying about the displayed match score.
+
+    Mixed anime is special because TMDB stores anime films as ``movie`` and
+    anime series as ``tv``. Without an explicit subtype balance, one side can
+    consume the whole page even when good candidates exist for both.
+    """
+    if media_filter != "anime":
+        return _diversify_recommendations_core(items, limit=limit)
+
+    balanced_source = balance_media_type_mix(items, limit=min(len(items), max(limit * 2, limit)))
+    movies = [item for item in balanced_source if item.media_type == "movie"]
+    tv = [item for item in balanced_source if item.media_type == "tv"]
+    if not movies or not tv:
+        return _diversify_recommendations_core(items, limit=limit)
+
+    half = limit // 2
+    movie_target = min(len(movies), half)
+    tv_target = min(len(tv), half)
+    selected = [
+        *_diversify_recommendations_core(movies, limit=movie_target),
+        *_diversify_recommendations_core(tv, limit=tv_target),
+    ]
+
+    selected_keys = {(item.media_type, item.tmdb_id) for item in selected}
+    remaining_slots = limit - len(selected)
+    if remaining_slots > 0:
+        leftovers = [
+            item
+            for item in items
+            if (item.media_type, item.tmdb_id) not in selected_keys
+        ]
+        selected.extend(
+            _diversify_recommendations_core(leftovers, limit=remaining_slots)
+        )
+
+    original_rank = {
+        (item.media_type, item.tmdb_id): index for index, item in enumerate(items)
+    }
+    selected.sort(key=lambda item: original_rank.get((item.media_type, item.tmdb_id), 10**9))
+    return selected[:limit]
+
+
+def _diversify_recommendations_core(
+    items: list[RecommendationItem],
+    *,
+    limit: int,
+) -> list[RecommendationItem]:
     remaining = list(items)
     selected: list[RecommendationItem] = []
     franchise_counts: defaultdict[str, int] = defaultdict(int)
@@ -796,7 +1035,10 @@ def diversify_recommendations(
                     union = item_genres | previous_genres
                     if not union:
                         continue
-                    max_overlap = max(max_overlap, len(item_genres & previous_genres) / len(union))
+                    max_overlap = max(
+                        max_overlap,
+                        len(item_genres & previous_genres) / len(union),
+                    )
                 if max_overlap >= 0.75:
                     adjusted -= 6.0
                 elif max_overlap >= 0.5:
@@ -814,6 +1056,39 @@ def diversify_recommendations(
 
     return selected
 
+
+
+def _discovery_pages(
+    media_filter: RecommendationMediaFilter,
+    discovery_mode: RecommendationDiscoveryMode,
+    *,
+    subtype_history_size: int,
+) -> list[int]:
+    """Choose how deeply to search TMDB discovery results.
+
+    Mature libraries quickly exhaust page 1 because popular titles have already
+    been watched. Anime series are especially affected, so deeper pagination is
+    intentional there rather than lowering quality thresholds.
+    """
+    if media_filter == "anime_tv":
+        base = {"familiar": 3, "balanced": 3, "hidden": 2}[discovery_mode]
+        if subtype_history_size >= 40:
+            base += 2
+        elif subtype_history_size >= 20:
+            base += 1
+        return list(range(1, min(base, 6) + 1))
+
+    if media_filter == "anime_movie":
+        base = {"familiar": 2, "balanced": 2, "hidden": 2}[discovery_mode]
+        if subtype_history_size >= 20:
+            base += 1
+        return list(range(1, min(base, 4) + 1))
+
+    # A second page helps mature live-action libraries without multiplying
+    # network traffic for small collections.
+    if subtype_history_size >= 40 and media_filter in {"movie", "tv"}:
+        return [1, 2]
+    return [1]
 
 def _candidate_is_anime(candidate: RecommendationCandidate) -> bool:
     return (
@@ -834,6 +1109,10 @@ def _feature_matches_filter(
         return feature.media_type == "tv" and ANIMATION_GENRE_ID not in feature.genre_ids
     if media_filter == "anime":
         return feature.is_anime
+    if media_filter == "anime_movie":
+        return feature.media_type == "movie" and feature.is_anime
+    if media_filter == "anime_tv":
+        return feature.media_type == "tv" and feature.is_anime
     return False
 
 
@@ -849,6 +1128,10 @@ def _candidate_matches_filter(
         return candidate.media_type == "tv" and ANIMATION_GENRE_ID not in candidate.genre_ids
     if media_filter == "anime":
         return _candidate_is_anime(candidate)
+    if media_filter == "anime_movie":
+        return candidate.media_type == "movie" and _candidate_is_anime(candidate)
+    if media_filter == "anime_tv":
+        return candidate.media_type == "tv" and _candidate_is_anime(candidate)
     return False
 
 
@@ -860,9 +1143,9 @@ def _passes_candidate_quality_gate(
 ) -> bool:
     """Reject thin TMDB entries according to the requested discovery style."""
     base_thresholds = {
-        "familiar": {"tv": 800, "anime": 200, "movie": 800, "all": 500},
-        "balanced": {"tv": 250, "anime": 50, "movie": 75, "all": 50},
-        "hidden": {"tv": 40, "anime": 15, "movie": 25, "all": 20},
+        "familiar": {"tv": 800, "anime": 200, "anime_movie": 200, "anime_tv": 200, "movie": 800, "all": 500},
+        "balanced": {"tv": 250, "anime": 50, "anime_movie": 50, "anime_tv": 50, "movie": 75, "all": 50},
+        "hidden": {"tv": 40, "anime": 15, "anime_movie": 15, "anime_tv": 15, "movie": 25, "all": 20},
     }
     minimum_votes = base_thresholds[discovery_mode][media_filter]
     if support_count >= 3:
@@ -931,7 +1214,31 @@ def _feature_match_score(
         ),
         key=lambda item: (-item[0], item[1].casefold()),
     )
-    return max(-24.0, min(30.0, score)), [name for _, name in positive_genres[:3]]
+    positive_keywords = sorted(
+        (
+            (
+                model.keyword_weights.get(keyword_id, 0.0)
+                * max(0.45, 1.0 - 0.5 * model.keyword_prevalence.get(keyword_id, 0.0)),
+                keyword_name,
+            )
+            for keyword_id, keyword_name in zip(feature.keyword_ids, feature.keyword_names)
+            if model.keyword_weights.get(keyword_id, 0.0) > 0.24
+        ),
+        key=lambda item: (-item[0], item[1].casefold()),
+    )
+    positive_creators = sorted(
+        (
+            (model.creator_weights.get(name.casefold(), 0.0), name)
+            for name in feature.creators
+            if model.creator_weights.get(name.casefold(), 0.0) > 0.22
+        ),
+        key=lambda item: (-item[0], item[1].casefold()),
+    )
+    matches: list[str] = []
+    for _score, name in [*positive_genres[:2], *positive_keywords[:1], *positive_creators[:1]]:
+        if name not in matches:
+            matches.append(name)
+    return max(-24.0, min(30.0, score)), matches[:3]
 
 
 def _familiarity_score(
@@ -954,15 +1261,15 @@ def _familiarity_score(
 def _candidate_reasons(
     *,
     support: list[RecommendationSeed],
-    positive_genres: list[str],
+    positive_matches: list[str],
     vote_average: float,
     vote_count: int,
     discovered: bool,
     on_watchlist: bool,
 ) -> list[str]:
     reasons: list[str] = []
-    if positive_genres:
-        reasons.append("Taste match: " + ", ".join(positive_genres) + ".")
+    if positive_matches:
+        reasons.append("Taste match: " + ", ".join(positive_matches) + ".")
 
     titles = [seed.title for seed in support[:2]]
     if len(support) >= 2:

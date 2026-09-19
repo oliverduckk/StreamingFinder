@@ -235,7 +235,7 @@ class RecommendationItem(BaseModel):
 
 
 class RecommendationResponse(BaseModel):
-    media_filter: Literal["all", "movie", "tv", "anime"]
+    media_filter: Literal["all", "movie", "tv", "anime", "anime_movie", "anime_tv"]
     discovery_mode: Literal["familiar", "balanced", "hidden"] = "balanced"
     only_my_services: bool
     generated_from: int = Field(ge=0)
@@ -243,3 +243,27 @@ class RecommendationResponse(BaseModel):
     message: str
     items: list[RecommendationItem]
 
+
+
+class MetadataAffinitySignal(BaseModel):
+    kind: Literal["genre", "keyword", "creator"]
+    key: str
+    label: str
+    affinity: float = Field(ge=-1.0, le=1.0)
+    sample_size: int = Field(ge=1)
+    positive_evidence: int = Field(ge=0)
+    negative_evidence: int = Field(ge=0)
+    supporting_titles: list[str] = Field(default_factory=list)
+
+
+class MetadataTasteProfile(BaseModel):
+    total_rated: int = Field(ge=0)
+    metadata_coverage: int = Field(ge=0)
+    confidence: Literal["empty", "early", "developing", "established"]
+    positive_genres: list[MetadataAffinitySignal] = Field(default_factory=list)
+    negative_genres: list[MetadataAffinitySignal] = Field(default_factory=list)
+    positive_keywords: list[MetadataAffinitySignal] = Field(default_factory=list)
+    negative_keywords: list[MetadataAffinitySignal] = Field(default_factory=list)
+    positive_creators: list[MetadataAffinitySignal] = Field(default_factory=list)
+    negative_creators: list[MetadataAffinitySignal] = Field(default_factory=list)
+    summary: str

@@ -1,57 +1,20 @@
-# StreamingFinder V0.12.3 — Anime Library Filter + Recommendation Discovery Modes
+# StreamingFinder
 
-V0.12.3 focuses on two issues found during real use: the Library needed the same anime/live-action split as Recommendations, and live-action TV recommendations were still surfacing too many obscure titles by default.
+StreamingFinder is a local desktop media app and API for finding where movies and TV shows stream around the world, tracking a personal media library, rating titles with a structured /100 system, and building transparent taste-based recommendations.
 
-## Library changes
+## V0.13.4 — Broader anime-series discovery
 
-The Library content filter is now:
+V0.13.4 fixes the remaining anime-series starvation bug. Anime recommendations were still being discovered through an overly narrow combination of the user's strongest genres, which could leave only one or two unseen series even when the library contained dozens of rated anime.
 
-```text
-Everything
-Movies
-TV series (live action)
-Anime
-```
+### New in this milestone
 
-Anime includes both anime films and anime series. Movies and TV series exclude titles classified as anime.
-
-New TMDB search results are classified immediately using original language + Animation genre metadata. Existing library rows are lazily classified the first time the Library is opened after upgrading, then the result is persisted in SQLite so this is a one-time backfill rather than a repeated network cost.
-
-## Recommendation discovery styles
-
-Recommendations now include a second selector:
-
-```text
-Familiar
-Balanced
-Hidden gems
-```
-
-**Familiar** is the desktop default. It favours titles with stronger TMDB audience/popularity evidence and uses popularity-sorted discovery, so live-action TV should lean toward recognisable candidates rather than tiny-vote curiosities.
-
-**Balanced** keeps a wider candidate pool while still applying quality floors.
-
-**Hidden gems** deliberately permits much smaller TMDB audiences when you want obscure recommendations.
-
-The recommendation scorer also now:
-
-- reduces the influence of extremely generic genres that appear across most of the user's rated titles;
-- scales TMDB seed/consensus bonuses by actual metadata alignment, so a weird TMDB "similar" link cannot dominate on its own;
-- uses stricter vote-confidence thresholds in Familiar mode;
-- adds a familiarity signal from TMDB vote count/popularity;
-- preserves positive/negative taste modelling, franchise diversity, anime/live-action separation, watch-history exclusion and streaming-service filtering.
-
-The displayed Match score is still a deterministic local ranking score, not a probability of enjoyment.
-
-## API
-
-```text
-GET /api/v1/recommendations?media_type=tv&discovery_mode=familiar
-GET /api/v1/recommendations?media_type=anime&discovery_mode=balanced
-GET /api/v1/recommendations?media_type=movie&discovery_mode=hidden
-```
-
-`discovery_mode` accepts `familiar`, `balanced`, or `hidden`.
+- Anime-series discovery now always includes a broad **Japanese + Animation** TMDB query, independent of taste genres.
+- The broader catalogue is searched across the mature-library pagination depth introduced in V0.13.3.
+- Additional single-genre taste searches are still performed so the user's metadata profile influences which candidates enter the pool.
+- The local taste model continues to rank the combined pool; broader discovery does not mean random recommendations.
+- `TMDBClient.discover_media()` now supports a required genre without also requiring taste-genre IDs, allowing a true broad anime catalogue query.
+- New regression coverage verifies both the broad-service discovery path and the actual TMDB query parameters.
+- Crunchyroll/provider availability is **not** used to generate candidates unless **Only my services** is enabled; provider filtering remains a later availability step.
 
 ## Run
 
@@ -61,9 +24,16 @@ pytest
 python -m app.desktop
 ```
 
-Expected test result for this patch: **61 passed**.
+## API highlights
 
-## Attribution
+```text
+GET /api/v1/search?query=Interstellar
+GET /api/v1/availability/movie/157336?my_services=true
+GET /api/v1/library
+GET /api/v1/ratings/dashboard
+GET /api/v1/ratings/taste-profile
+GET /api/v1/ratings/metadata-profile
+GET /api/v1/recommendations
+```
 
-This product uses the TMDB API but is not endorsed or certified by TMDB.  
-Streaming availability data is provided by JustWatch via TMDB and requires JustWatch attribution when displayed.
+Streaming availability data is supplied through TMDB's JustWatch integration. The desktop UI includes the required attribution.

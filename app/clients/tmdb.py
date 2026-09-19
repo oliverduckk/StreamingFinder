@@ -161,7 +161,7 @@ class TMDBClient:
         sort_by: str = "vote_average.desc",
     ) -> list[RecommendationCandidate]:
         """Return broader candidates from genres the local taste model prefers."""
-        if not genre_ids:
+        if not genre_ids and required_genre_id is None:
             return []
         params: dict[str, object] = {
             "language": "en-US",
@@ -172,8 +172,9 @@ class TMDBClient:
                 if minimum_vote_count is not None
                 else (350 if media_type == "movie" else 120)
             ),
-            "with_genres": "|".join(str(value) for value in genre_ids[:4]),
         }
+        if genre_ids:
+            params["with_genres"] = "|".join(str(value) for value in genre_ids[:4])
         if required_genre_id is not None:
             other_genres = [value for value in genre_ids if value != required_genre_id][:4]
             params["with_genres"] = str(required_genre_id)

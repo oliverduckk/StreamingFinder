@@ -44,6 +44,8 @@ from app.models.media import (
     MediaLibraryEntry,
     MediaRating,
     MediaSearchResult,
+    MetadataAffinitySignal,
+    MetadataTasteProfile,
     RatedTitleSummary,
     RatingsDashboard,
     RecommendationItem,
@@ -52,11 +54,14 @@ from app.models.media import (
     StreamingServiceAvailability,
 )
 from app.repositories.dismissals import RecommendationDismissalRepository
+from app.repositories.features import MediaFeatureRepository
 from app.repositories.library import MediaLibraryRepository
 from app.repositories.preferences import StreamingPreferencesRepository
 from app.repositories.ratings import MediaRatingRepository
 from app.services.library_catalog import prepare_library_entries, rating_totals
 from app.services.library_classification import LibraryClassificationService
+from app.services.media_metadata import MediaMetadataService
+from app.services.metadata_taste import build_metadata_taste_profile
 from app.services.ratings_dashboard import build_ratings_dashboard
 from app.services.recommendations import RecommendationService
 from app.services.taste_profile import build_taste_profile
@@ -74,8 +79,15 @@ class MainWindow(QMainWindow):
         self.library_classifier = LibraryClassificationService(self.tmdb, self.library)
         self.ratings = MediaRatingRepository(database)
         self.dismissals = RecommendationDismissalRepository(database)
+        self.features = MediaFeatureRepository(database)
+        self.metadata = MediaMetadataService(self.tmdb, self.features)
         self.recommendations = RecommendationService(
-            self.tmdb, self.library, self.ratings, self.preferences, self.dismissals
+            self.tmdb,
+            self.library,
+            self.ratings,
+            self.preferences,
+            self.dismissals,
+            metadata=self.metadata,
         )
         self.thread_pool = QThreadPool.globalInstance()
         self.network = QNetworkAccessManager(self)
@@ -86,6 +98,7 @@ class MainWindow(QMainWindow):
         self._library_dirty = True
         self._library_classification_running = False
         self._ratings_dirty = True
+        self._metadata_profile_running = False
         self._recommendations_dirty = True
         self._library_cards: list[QWidget] = []
         self._recommendation_cards: list[QWidget] = []
@@ -548,6 +561,59 @@ class MainWindow(QMainWindow):
         taste_layout.addWidget(self.taste_favourite_label)
         dashboard_layout.addWidget(taste_panel)
 
+        metadata_panel = QFrame()
+        metadata_panel.setObjectName("tasteProfilePanel")
+        metadata_layout = QVBoxLayout(metadata_panel)
+        metadata_layout.setContentsMargins(16, 14, 16, 16)
+        metadata_layout.setSpacing(10)
+
+        metadata_header = QHBoxLayout()
+        metadata_title = QLabel("Metadata taste model")
+        metadata_title.setObjectName("sectionTitle")
+        self.metadata_coverage_label = QLabel("Not analysed yet")
+        self.metadata_coverage_label.setObjectName("muted")
+        self.metadata_confidence_badge = QLabel("EARLY")
+        self.metadata_confidence_badge.setObjectName("tasteConfidenceBadge")
+        metadata_header.addWidget(metadata_title)
+        metadata_header.addWidget(self.metadata_coverage_label)
+        metadata_header.addStretch()
+        metadata_header.addWidget(self.metadata_confidence_badge)
+        metadata_layout.addLayout(metadata_header)
+
+        self.metadata_summary_label = QLabel(
+            "Open Ratings and StreamingFinder will map genres, themes and creators "
+            "across your rated library."
+        )
+        self.metadata_summary_label.setObjectName("muted")
+        self.metadata_summary_label.setWordWrap(True)
+        metadata_layout.addWidget(self.metadata_summary_label)
+
+        metadata_columns = QHBoxLayout()
+        metadata_columns.setSpacing(18)
+
+        positive_column = QVBoxLayout()
+        positive_heading = QLabel("Leans toward")
+        positive_heading.setObjectName("tasteSubheading")
+        positive_column.addWidget(positive_heading)
+        self.metadata_positive_layout = QVBoxLayout()
+        self.metadata_positive_layout.setSpacing(6)
+        positive_column.addLayout(self.metadata_positive_layout)
+        positive_column.addStretch()
+        metadata_columns.addLayout(positive_column, 1)
+
+        negative_column = QVBoxLayout()
+        negative_heading = QLabel("Leans away from")
+        negative_heading.setObjectName("tasteSubheading")
+        negative_column.addWidget(negative_heading)
+        self.metadata_negative_layout = QVBoxLayout()
+        self.metadata_negative_layout.setSpacing(6)
+        negative_column.addLayout(self.metadata_negative_layout)
+        negative_column.addStretch()
+        metadata_columns.addLayout(negative_column, 1)
+
+        metadata_layout.addLayout(metadata_columns)
+        dashboard_layout.addWidget(metadata_panel)
+
         split = QHBoxLayout()
         split.setSpacing(14)
 
@@ -640,6 +706,8 @@ class MainWindow(QMainWindow):
         self.recommendation_type_combo.addItem("Movies", "movie")
         self.recommendation_type_combo.addItem("TV series (live action)", "tv")
         self.recommendation_type_combo.addItem("Anime (movies + series)", "anime")
+        self.recommendation_type_combo.addItem("Anime series", "anime_tv")
+        self.recommendation_type_combo.addItem("Anime movies", "anime_movie")
         controls.addWidget(self.recommendation_type_combo)
 
         self.recommendation_discovery_combo = QComboBox()
@@ -1038,6 +1106,11 @@ class MainWindow(QMainWindow):
         self._refresh_taste_profile(taste_profile)
 
         if dashboard.total_rated == 0:
+            self._reset_metadata_profile()
+        else:
+            self._start_metadata_profile_refresh(ratings, library_entries)
+
+        if dashboard.total_rated == 0:
             self.ratings_empty_state.show()
             self.ratings_dashboard_container.hide()
             self._ratings_dirty = False
@@ -1153,6 +1226,137 @@ class MainWindow(QMainWindow):
                 f"{profile.non_favourite_average:.1f}/100 for other rated titles "
                 f"({sign}{profile.favourite_delta:.1f} points)."
             )
+
+    def _start_metadata_profile_refresh(
+        self,
+        ratings: list[MediaRating],
+        library_entries: list[MediaLibraryEntry],
+    ) -> None:
+        if self._metadata_profile_running:
+            return
+        self._metadata_profile_running = True
+        self.metadata_summary_label.setText(
+            f"Analysing genres, themes and creators across {len(ratings)} rated title(s)…"
+        )
+        self.metadata_coverage_label.setText("Building local metadata cache…")
+
+        async def build_profile() -> MetadataTasteProfile:
+            features = await self.metadata.get_many(
+                [(rating.media_type, rating.tmdb_id) for rating in ratings]
+            )
+            return build_metadata_taste_profile(ratings, library_entries, features)
+
+        worker = AsyncWorker(build_profile)
+        worker.signals.result.connect(self._handle_metadata_profile_result)
+        worker.signals.error.connect(self._handle_metadata_profile_error)
+        worker.signals.finished.connect(self._finish_metadata_profile_refresh)
+        self.thread_pool.start(worker)
+
+    @Slot(object)
+    def _handle_metadata_profile_result(self, payload: object) -> None:
+        if not isinstance(payload, MetadataTasteProfile):
+            self._handle_metadata_profile_error("Unexpected metadata profile response.")
+            return
+        self._refresh_metadata_profile(payload)
+
+    @Slot(str)
+    def _handle_metadata_profile_error(self, message: str) -> None:
+        self.metadata_summary_label.setText(
+            f"Could not finish metadata taste analysis: {message}"
+        )
+        self.metadata_coverage_label.setText("Analysis unavailable")
+
+    @Slot()
+    def _finish_metadata_profile_refresh(self) -> None:
+        self._metadata_profile_running = False
+
+    def _reset_metadata_profile(self) -> None:
+        self.metadata_confidence_badge.setText("EMPTY")
+        self.metadata_coverage_label.setText("No rated titles")
+        self.metadata_summary_label.setText(
+            "Rate a few titles and StreamingFinder will map genres, themes and creators."
+        )
+        self._clear_layout(self.metadata_positive_layout)
+        self._clear_layout(self.metadata_negative_layout)
+
+    def _refresh_metadata_profile(self, profile: MetadataTasteProfile) -> None:
+        self.metadata_confidence_badge.setText(profile.confidence.upper())
+        self.metadata_confidence_badge.setProperty("confidence", profile.confidence)
+        self.metadata_confidence_badge.style().unpolish(self.metadata_confidence_badge)
+        self.metadata_confidence_badge.style().polish(self.metadata_confidence_badge)
+        self.metadata_coverage_label.setText(
+            f"{profile.metadata_coverage}/{profile.total_rated} rated titles analysed"
+        )
+        self.metadata_summary_label.setText(profile.summary)
+        self._populate_metadata_affinities(
+            self.metadata_positive_layout,
+            [
+                ("Genres", profile.positive_genres),
+                ("Themes / keywords", profile.positive_keywords),
+                ("Creators / directors", profile.positive_creators),
+            ],
+            positive=True,
+        )
+        self._populate_metadata_affinities(
+            self.metadata_negative_layout,
+            [
+                ("Genres", profile.negative_genres),
+                ("Themes / keywords", profile.negative_keywords),
+                ("Creators / directors", profile.negative_creators),
+            ],
+            positive=False,
+        )
+
+    def _populate_metadata_affinities(
+        self,
+        layout: QLayout,
+        groups: list[tuple[str, list[MetadataAffinitySignal]]],
+        *,
+        positive: bool,
+    ) -> None:
+        self._clear_layout(layout)
+        added = False
+        for heading_text, signals in groups:
+            if not signals:
+                continue
+            heading = QLabel(heading_text)
+            heading.setObjectName("muted")
+            layout.addWidget(heading)
+            for signal in signals[:3]:
+                row = QFrame()
+                row.setObjectName("tasteSignalRow")
+                row_layout = QHBoxLayout(row)
+                row_layout.setContentsMargins(10, 7, 10, 7)
+                text = QVBoxLayout()
+                text.setSpacing(1)
+                label = QLabel(signal.label)
+                label.setObjectName("tasteSignalLabel")
+                evidence = QLabel(
+                    f"{signal.sample_size} title(s) • "
+                    f"{signal.positive_evidence} positive / {signal.negative_evidence} negative"
+                )
+                evidence.setObjectName("muted")
+                text.addWidget(label)
+                text.addWidget(evidence)
+                row_layout.addLayout(text, 1)
+                value = QLabel(f"{signal.affinity:+.2f}")
+                value.setObjectName(
+                    "tasteCorrelationValue" if positive else "tasteSignalValue"
+                )
+                if signal.supporting_titles:
+                    value.setToolTip("Strong evidence: " + ", ".join(signal.supporting_titles))
+                row_layout.addWidget(value)
+                layout.addWidget(row)
+                added = True
+        if not added:
+            placeholder = QLabel(
+                "No strong positive metadata pattern yet."
+                if positive
+                else "No strong negative metadata pattern yet."
+            )
+            placeholder.setObjectName("muted")
+            placeholder.setWordWrap(True)
+            layout.addWidget(placeholder)
 
     @staticmethod
     def _ratings_summary_text(dashboard: RatingsDashboard) -> str:
