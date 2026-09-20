@@ -82,7 +82,7 @@ def test_seed_selection_prefers_favourites_and_excludes_disliked_titles() -> Non
     assert seeds[0].weight > seeds[1].weight
 
 
-def test_rank_candidates_rewards_consensus_and_excludes_watched() -> None:
+def test_rank_candidates_rewards_consensus_and_excludes_saved_titles() -> None:
     seed_a = RecommendationSeed("movie", 1, "A", 95.0, True, 9.5, 1.1)
     seed_b = RecommendationSeed("movie", 2, "B", 90.0, False, 9.0, 0.9)
     consensus_media = RecommendationCandidate(
@@ -109,12 +109,24 @@ def test_rank_candidates_rewards_consensus_and_excludes_watched() -> None:
         vote_average=9.0,
         vote_count=9000,
     )
+    watchlist_media = RecommendationCandidate(
+        tmdb_id=13,
+        media_type="movie",
+        title="Watchlist",
+        year=2023,
+        vote_average=9.2,
+        vote_count=12000,
+    )
     candidates = {
         ("movie", 10): CandidateAccumulator(consensus_media, 8.0, 5000, 50.0, {("movie", 1): seed_a, ("movie", 2): seed_b}),
         ("movie", 11): CandidateAccumulator(single_media, 8.0, 5000, 50.0, {("movie", 1): seed_a}),
         ("movie", 12): CandidateAccumulator(watched_media, 9.0, 9000, 70.0, {("movie", 1): seed_a, ("movie", 2): seed_b}),
+        ("movie", 13): CandidateAccumulator(watchlist_media, 9.2, 12000, 80.0, {("movie", 1): seed_a, ("movie", 2): seed_b}),
     }
-    library = {("movie", 12): _entry("movie", 12, "Watched", status="watched")}
+    library = {
+        ("movie", 12): _entry("movie", 12, "Watched", status="watched"),
+        ("movie", 13): _entry("movie", 13, "Watchlist", status="watchlist"),
+    }
 
     ranked = rank_candidates(candidates, library)
 

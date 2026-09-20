@@ -2,21 +2,68 @@
 
 StreamingFinder is a local desktop media app and API for finding where movies and TV shows stream around the world, tracking a personal media library, rating titles with a structured /100 system, and building transparent taste-based recommendations.
 
-## V0.13.4 — Broader anime-series discovery
+## V0.16 — Windows desktop application
 
-V0.13.4 fixes the remaining anime-series starvation bug. Anime recommendations were still being discovered through an overly narrow combination of the user's strongest genres, which could leave only one or two unseen series even when the library contained dozens of rated anime.
+V0.16 can be installed as a normal clickable Windows application. The installed build:
 
-### New in this milestone
+- creates `StreamingFinder.exe` with no console window,
+- creates Desktop and Start Menu shortcuts,
+- migrates the existing `.env` and SQLite library into `%LOCALAPPDATA%\StreamingFinder`,
+- keeps personal data outside the executable so future app updates do not overwrite it, and
+- starts the local FastAPI service silently on `127.0.0.1:8000` while the desktop app is running.
 
-- Anime-series discovery now always includes a broad **Japanese + Animation** TMDB query, independent of taste genres.
-- The broader catalogue is searched across the mature-library pagination depth introduced in V0.13.3.
-- Additional single-genre taste searches are still performed so the user's metadata profile influences which candidates enter the pool.
-- The local taste model continues to rank the combined pool; broader discovery does not mean random recommendations.
-- `TMDBClient.discover_media()` now supports a required genre without also requiring taste-genre IDs, allowing a true broad anime catalogue query.
-- New regression coverage verifies both the broad-service discovery path and the actual TMDB query parameters.
-- Crunchyroll/provider availability is **not** used to generate candidates unless **Only my services** is enabled; provider filtering remains a later availability step.
+From an activated virtual environment, run:
 
-## Run
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+.\scripts\install_windows.ps1
+```
+
+After installation, StreamingFinder can be launched directly from the desktop or Start Menu. VS Code and the Python virtual environment are not required to run the installed application.
+
+The installed files live under `%LOCALAPPDATA%\Programs\StreamingFinder`, while the TMDB configuration and SQLite database live under `%LOCALAPPDATA%\StreamingFinder`.
+
+To remove the application while preserving personal data:
+
+```powershell
+.\scripts\uninstall_windows.ps1
+```
+
+To also remove the local library, ratings and configuration:
+
+```powershell
+.\scripts\uninstall_windows.ps1 -RemoveData
+```
+
+## V0.15 — Assistant integration API
+
+V0.15 adds a tool-oriented API facade designed for future Mairon integration. The desktop app remains independent, while Mairon can consume structured StreamingFinder data without knowing how the GUI, SQLite repositories or TMDB orchestration work internally.
+
+### Assistant endpoints
+
+```text
+GET /api/v1/assistant/where-to-watch
+GET /api/v1/assistant/title-context
+GET /api/v1/assistant/recommendations
+GET /api/v1/assistant/profile
+```
+
+Examples:
+
+```text
+/api/v1/assistant/where-to-watch?query=Interstellar
+/api/v1/assistant/title-context?query=Interstellar&media_type=movie&year=2014
+/api/v1/assistant/recommendations?media_type=movie&limit=5&discovery_mode=familiar
+/api/v1/assistant/profile
+```
+
+Title resolution prefers exact title matches and can use optional media type/year hints. Responses also include alternative TMDB matches so an assistant can ask for clarification rather than silently selecting an ambiguous title.
+
+The profile endpoint combines local library counts, ratings dashboard data, category-level taste signals, cached metadata affinities and recommendation-feedback totals into one assistant-friendly response.
+
+See [`docs/MAIRON_INTEGRATION.md`](docs/MAIRON_INTEGRATION.md) for the suggested Mairon tool contract.
+
+## Run desktop app
 
 ```powershell
 python -m pip install -e ".[dev]"
@@ -24,7 +71,19 @@ pytest
 python -m app.desktop
 ```
 
-## API highlights
+## Run API
+
+```powershell
+uvicorn app.main:app --reload
+```
+
+Then open:
+
+```text
+http://127.0.0.1:8000/docs
+```
+
+## Existing API highlights
 
 ```text
 GET /api/v1/search?query=Interstellar
@@ -34,6 +93,7 @@ GET /api/v1/ratings/dashboard
 GET /api/v1/ratings/taste-profile
 GET /api/v1/ratings/metadata-profile
 GET /api/v1/recommendations
+GET /api/v1/recommendation-feedback/summary
 ```
 
 Streaming availability data is supplied through TMDB's JustWatch integration. The desktop UI includes the required attribution.

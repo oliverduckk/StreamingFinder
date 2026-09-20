@@ -57,6 +57,7 @@ from app.repositories.dismissals import RecommendationDismissalRepository
 from app.repositories.features import MediaFeatureRepository
 from app.repositories.library import MediaLibraryRepository
 from app.repositories.preferences import StreamingPreferencesRepository
+from app.repositories.recommendation_feedback import RecommendationFeedbackRepository
 from app.repositories.ratings import MediaRatingRepository
 from app.services.library_catalog import prepare_library_entries, rating_totals
 from app.services.library_classification import LibraryClassificationService
@@ -79,6 +80,7 @@ class MainWindow(QMainWindow):
         self.library_classifier = LibraryClassificationService(self.tmdb, self.library)
         self.ratings = MediaRatingRepository(database)
         self.dismissals = RecommendationDismissalRepository(database)
+        self.recommendation_feedback = RecommendationFeedbackRepository(database)
         self.features = MediaFeatureRepository(database)
         self.metadata = MediaMetadataService(self.tmdb, self.features)
         self.recommendations = RecommendationService(
@@ -88,6 +90,7 @@ class MainWindow(QMainWindow):
             self.preferences,
             self.dismissals,
             metadata=self.metadata,
+            feedback=self.recommendation_feedback,
         )
         self.thread_pool = QThreadPool.globalInstance()
         self.network = QNetworkAccessManager(self)
@@ -690,8 +693,8 @@ class MainWindow(QMainWindow):
         heading = QLabel("What should I watch?")
         heading.setObjectName("recommendationsHeading")
         description = QLabel(
-            "Blends your high and low ratings with genres, keywords and creators, "
-            "then diversifies the results and checks worldwide availability."
+            "Blends your ratings with genres, keywords, creators and your recommendation "
+            "feedback, then diversifies the results and checks worldwide availability."
         )
         description.setObjectName("muted")
         description.setWordWrap(True)
@@ -822,10 +825,19 @@ class MainWindow(QMainWindow):
         only_my_services = self.recommendation_services_checkbox.isChecked()
         self.recommendation_refresh_button.setEnabled(False)
         self.recommendation_loading_bar.show()
+        feedback_count = self.recommendation_feedback.summary().titles_observed
+        learning_note = (
+            f" Learning from {feedback_count} recommendation reaction(s)."
+            if feedback_count
+            else ""
+        )
         self.recommendation_status_label.setText(
-            "Building your taste model, diversifying candidates and checking availability…"
-            if only_my_services
-            else "Building your taste model and diversifying candidates…"
+            (
+                "Building your taste model, diversifying candidates and checking availability…"
+                if only_my_services
+                else "Building your taste model and diversifying candidates…"
+            )
+            + learning_note
         )
         self._set_recommendations_message("Finding a fresh set…")
 
@@ -985,8 +997,8 @@ class MainWindow(QMainWindow):
         watchlist_button.setObjectName("recommendationWatchlistButton")
         watchlist_button.setEnabled(not item.on_watchlist)
         watchlist_button.clicked.connect(
-            lambda _checked=False, current=item, button=watchlist_button: (
-                self._add_recommendation_to_watchlist(current, button)
+            lambda _checked=False, current=item, button=watchlist_button, target=card: (
+                self._add_recommendation_to_watchlist(current, button, target)
             )
         )
         primary_actions.addWidget(watchlist_button)
@@ -1014,6 +1026,9 @@ class MainWindow(QMainWindow):
         return card
 
     def _open_recommendation(self, item: RecommendationItem) -> None:
+        self.recommendation_feedback.record(
+            item.media_type, item.tmdb_id, item.title, "open_details"
+        )
         media = MediaSearchResult(
             tmdb_id=item.tmdb_id,
             media_type=item.media_type,
@@ -1034,6 +1049,7 @@ class MainWindow(QMainWindow):
         self,
         item: RecommendationItem,
         button: QPushButton,
+        card: QWidget,
     ) -> None:
         media = MediaSearchResult(
             tmdb_id=item.tmdb_id,
@@ -1045,12 +1061,18 @@ class MainWindow(QMainWindow):
             is_anime=item.is_anime,
         )
         self.library.upsert(media, "watchlist")
+        self.recommendation_feedback.record(
+            item.media_type, item.tmdb_id, item.title, "watchlist"
+        )
         item.on_watchlist = True
         button.setText("On watchlist")
         button.setEnabled(False)
         self._library_dirty = True
         self._recommendations_dirty = True
-        self.recommendation_status_label.setText(f"Added {item.title} to your watchlist.")
+        self.recommendation_status_label.setText(
+            f"Added {item.title} to your watchlist. It will be excluded from future recommendations."
+        )
+        self._remove_recommendation_card(card)
 
     def _mark_recommendation_watched(
         self,
@@ -1067,6 +1089,9 @@ class MainWindow(QMainWindow):
             is_anime=item.is_anime,
         )
         self.library.upsert(media, "watched")
+        self.recommendation_feedback.record(
+            item.media_type, item.tmdb_id, item.title, "watched"
+        )
         self._library_dirty = True
         self._ratings_dirty = True
         self._recommendations_dirty = True
@@ -1081,6 +1106,9 @@ class MainWindow(QMainWindow):
         card: QWidget,
     ) -> None:
         self.dismissals.add(item.media_type, item.tmdb_id, item.title)
+        self.recommendation_feedback.record(
+            item.media_type, item.tmdb_id, item.title, "not_interested"
+        )
         self._recommendations_dirty = True
         self.recommendation_status_label.setText(
             f"Hidden {item.title} from future recommendations."

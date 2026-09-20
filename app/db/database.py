@@ -111,3 +111,22 @@ class SQLiteDatabase:
                 )
                 """
             )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS recommendation_feedback (
+                    media_type TEXT NOT NULL CHECK (media_type IN ('movie', 'tv')),
+                    tmdb_id INTEGER NOT NULL,
+                    title TEXT NOT NULL,
+                    open_count INTEGER NOT NULL DEFAULT 0 CHECK (open_count >= 0),
+                    watchlist_count INTEGER NOT NULL DEFAULT 0 CHECK (watchlist_count >= 0),
+                    watched_count INTEGER NOT NULL DEFAULT 0 CHECK (watched_count >= 0),
+                    not_interested_count INTEGER NOT NULL DEFAULT 0 CHECK (not_interested_count >= 0),
+                    last_action TEXT NOT NULL CHECK (
+                        last_action IN ('open_details', 'watchlist', 'watched', 'not_interested')
+                    ),
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (media_type, tmdb_id)
+                )
+                """
+            )

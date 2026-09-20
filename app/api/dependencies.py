@@ -7,7 +7,9 @@ from app.repositories.dismissals import RecommendationDismissalRepository
 from app.repositories.features import MediaFeatureRepository
 from app.repositories.library import MediaLibraryRepository
 from app.repositories.preferences import StreamingPreferencesRepository
+from app.repositories.recommendation_feedback import RecommendationFeedbackRepository
 from app.repositories.ratings import MediaRatingRepository
+from app.services.assistant import AssistantService
 from app.services.media_metadata import MediaMetadataService
 from app.services.recommendations import RecommendationService
 
@@ -46,6 +48,12 @@ def get_dismissals_repository(
     return RecommendationDismissalRepository(SQLiteDatabase(settings.database_path))
 
 
+def get_recommendation_feedback_repository(
+    settings: Settings = Depends(get_settings),
+) -> RecommendationFeedbackRepository:
+    return RecommendationFeedbackRepository(SQLiteDatabase(settings.database_path))
+
+
 def get_features_repository(
     settings: Settings = Depends(get_settings),
 ) -> MediaFeatureRepository:
@@ -65,6 +73,7 @@ def get_recommendation_service(
     ratings: MediaRatingRepository = Depends(get_ratings_repository),
     preferences: StreamingPreferencesRepository = Depends(get_preferences_repository),
     dismissals: RecommendationDismissalRepository = Depends(get_dismissals_repository),
+    feedback: RecommendationFeedbackRepository = Depends(get_recommendation_feedback_repository),
     metadata: MediaMetadataService = Depends(get_media_metadata_service),
 ) -> RecommendationService:
     return RecommendationService(
@@ -74,4 +83,25 @@ def get_recommendation_service(
         preferences,
         dismissals,
         metadata=metadata,
+        feedback=feedback,
+    )
+
+
+def get_assistant_service(
+    tmdb: TMDBClient = Depends(get_tmdb_client),
+    library: MediaLibraryRepository = Depends(get_library_repository),
+    ratings: MediaRatingRepository = Depends(get_ratings_repository),
+    preferences: StreamingPreferencesRepository = Depends(get_preferences_repository),
+    recommendations: RecommendationService = Depends(get_recommendation_service),
+    feedback: RecommendationFeedbackRepository = Depends(get_recommendation_feedback_repository),
+    features: MediaFeatureRepository = Depends(get_features_repository),
+) -> AssistantService:
+    return AssistantService(
+        tmdb,
+        library,
+        ratings,
+        preferences,
+        recommendations,
+        feedback,
+        features,
     )

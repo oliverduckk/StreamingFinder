@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field, model_validator
 
 MediaType = Literal["movie", "tv"]
 LibraryStatus = Literal["watchlist", "watching", "watched", "dropped"]
+RecommendationFeedbackAction = Literal["open_details", "watchlist", "watched", "not_interested"]
 
 
 class MediaSearchResult(BaseModel):
@@ -212,6 +213,34 @@ class RecommendationDismissal(BaseModel):
     tmdb_id: int
     title: str
     created_at: str
+
+
+class RecommendationFeedbackEntry(BaseModel):
+    media_type: MediaType
+    tmdb_id: int
+    title: str
+    open_count: int = Field(ge=0)
+    watchlist_count: int = Field(ge=0)
+    watched_count: int = Field(ge=0)
+    not_interested_count: int = Field(ge=0)
+    last_action: RecommendationFeedbackAction
+    created_at: str
+    updated_at: str
+
+
+class RecommendationFeedbackRecordRequest(BaseModel):
+    title: str
+    action: RecommendationFeedbackAction
+
+
+class RecommendationFeedbackSummary(BaseModel):
+    titles_observed: int = Field(ge=0)
+    opened: int = Field(ge=0)
+    watchlisted: int = Field(ge=0)
+    watched: int = Field(ge=0)
+    not_interested: int = Field(ge=0)
+    positive_signal_titles: int = Field(ge=0)
+    negative_signal_titles: int = Field(ge=0)
 
 
 class RecommendationItem(BaseModel):

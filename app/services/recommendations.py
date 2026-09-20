@@ -20,9 +20,15 @@ from app.models.media import (
 from app.repositories.dismissals import RecommendationDismissalRepository
 from app.repositories.library import MediaLibraryRepository
 from app.repositories.preferences import StreamingPreferencesRepository
+from app.repositories.recommendation_feedback import RecommendationFeedbackRepository
 from app.repositories.ratings import MediaRatingRepository
 from app.services.media_metadata import MediaMetadataService
 from app.services.metadata_taste import build_weighted_feature_inputs
+from app.services.recommendation_feedback import (
+    FeedbackTasteModel,
+    build_feedback_taste_model,
+    feedback_match_score,
+)
 
 RecommendationMediaFilter = Literal["all", "movie", "tv", "anime", "anime_movie", "anime_tv"]
 RecommendationDiscoveryMode = Literal["familiar", "balanced", "hidden"]
@@ -105,6 +111,7 @@ class RecommendationService:
         dismissals: RecommendationDismissalRepository | None = None,
         *,
         metadata: MediaMetadataService | None = None,
+        feedback: RecommendationFeedbackRepository | None = None,
     ) -> None:
         self.tmdb = tmdb
         self.library = library
@@ -112,6 +119,7 @@ class RecommendationService:
         self.preferences = preferences
         self.dismissals = dismissals
         self.metadata = metadata
+        self.feedback = feedback
         self._feature_cache: dict[tuple[str, int], MediaFeatureProfile] = {}
 
     async def recommend(
@@ -255,6 +263,7 @@ class RecommendationService:
             weighted_features = full_history_weights
 
         taste_model = build_feature_taste_model(weighted_features)
+        feedback_model = await self._build_feedback_model(media_type)
         seed_source = seeds
         active_seeds = diversify_recommendation_seeds(
             seed_source,
@@ -390,6 +399,7 @@ class RecommendationService:
             library_by_key,
             taste_model=taste_model,
             dismissed_keys=dismissed_keys,
+            feedback_model=feedback_model,
             media_filter=media_type,
             discovery_mode=discovery_mode,
         )
@@ -418,6 +428,7 @@ class RecommendationService:
             taste_model=taste_model,
             features_by_key=features_by_key,
             dismissed_keys=dismissed_keys,
+            feedback_model=feedback_model,
             media_filter=media_type,
             discovery_mode=discovery_mode,
         )
@@ -554,6 +565,37 @@ class RecommendationService:
             message=message,
             items=items,
         )
+
+    async def _build_feedback_model(
+        self,
+        media_type: RecommendationMediaFilter,
+    ) -> FeedbackTasteModel | None:
+        if self.feedback is None:
+            return None
+        entries = self.feedback.list()
+        if not entries:
+            return None
+
+        # Keep recent feedback bounded so repeated exploratory clicks cannot turn
+        # into a second ratings database. Metadata caching makes this cheap after
+        # the first lookup. Subtype filtering happens after metadata is loaded.
+        entries = entries[:60]
+        results = await asyncio.gather(
+            *(self._get_features(item.media_type, item.tmdb_id) for item in entries),
+            return_exceptions=True,
+        )
+        features: dict[tuple[str, int], MediaFeatureProfile] = {}
+        usable_feedback = []
+        for item, result in zip(entries, results, strict=True):
+            if isinstance(result, Exception):
+                continue
+            if not _feature_matches_filter(result, media_type):
+                continue
+            features[(item.media_type, item.tmdb_id)] = result
+            usable_feedback.append(item)
+        if not usable_feedback:
+            return None
+        return build_feedback_taste_model(usable_feedback, features)
 
     async def _get_features(
         self,
@@ -808,6 +850,7 @@ def rank_candidates(
     taste_model: FeatureTasteModel | None = None,
     features_by_key: dict[tuple[str, int], MediaFeatureProfile] | None = None,
     dismissed_keys: set[tuple[str, int]] | None = None,
+    feedback_model: FeedbackTasteModel | None = None,
     media_filter: RecommendationMediaFilter = "all",
     discovery_mode: RecommendationDiscoveryMode = "balanced",
 ) -> list[RecommendationItem]:
@@ -820,6 +863,7 @@ def rank_candidates(
             continue
         library_entry = library_by_key.get(key)
         if library_entry is not None and library_entry.status in {
+            "watchlist",
             "watched",
             "watching",
             "dropped",
@@ -848,6 +892,7 @@ def rank_candidates(
             )
 
         feature_score, positive_matches = _feature_match_score(taste_model, feature)
+        feedback_score, feedback_matches = feedback_match_score(feedback_model, feature)
         alignment = max(0.25, min(1.0, (feature_score + 12.0) / 34.0))
         support_score = min(18.0, sum(seed.weight for seed in support) * 6.0) * alignment
         consensus = min(6.0, max(0, len(support) - 1) * 1.9) * alignment
@@ -861,7 +906,6 @@ def rank_candidates(
         )
 
         favourite_bonus = 2.0 if any(seed.favourite for seed in support) else 0.0
-        watchlist_bonus = 2.0 if library_entry and library_entry.status == "watchlist" else 0.0
         discovery_bonus = 1.5 if candidate.discovered and not support else 0.0
         score = round(
             max(
@@ -872,10 +916,10 @@ def rank_candidates(
                     + support_score
                     + consensus
                     + feature_score
+                    + feedback_score
                     + audience_score
                     + familiarity_score
                     + favourite_bonus
-                    + watchlist_bonus
                     + discovery_bonus,
                 ),
             ),
@@ -885,6 +929,7 @@ def rank_candidates(
         reasons = _candidate_reasons(
             support=support,
             positive_matches=positive_matches,
+            feedback_matches=feedback_matches,
             vote_average=candidate.vote_average,
             vote_count=candidate.vote_count,
             discovered=candidate.discovered,
@@ -1262,6 +1307,7 @@ def _candidate_reasons(
     *,
     support: list[RecommendationSeed],
     positive_matches: list[str],
+    feedback_matches: list[str],
     vote_average: float,
     vote_count: int,
     discovered: bool,
@@ -1270,6 +1316,12 @@ def _candidate_reasons(
     reasons: list[str] = []
     if positive_matches:
         reasons.append("Taste match: " + ", ".join(positive_matches) + ".")
+    if feedback_matches:
+        reasons.append(
+            "Your recommendation feedback also leans toward "
+            + ", ".join(feedback_matches)
+            + "."
+        )
 
     titles = [seed.title for seed in support[:2]]
     if len(support) >= 2:
