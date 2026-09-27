@@ -125,3 +125,67 @@ def test_content_filter_separates_anime_from_live_action_movies_and_tv() -> None
             entries, content_filter="anime", sort_by="title"
         )
     ] == ["Attack on Titan", "Paprika"]
+
+
+def test_reverse_rating_sort_preserves_unrated_items_at_bottom() -> None:
+    entries = [
+        entry("Unrated Z", 9),
+        entry("High", 1),
+        entry("Low", 2),
+        entry("Unrated A", 8),
+    ]
+    totals = {("movie", 1): 95.0, ("movie", 2): 35.0}
+    ascending = prepare_library_entries(
+        entries, sort_by="rating", descending=False, ratings=totals
+    )
+    descending = prepare_library_entries(
+        entries, sort_by="rating", descending=True, ratings=totals
+    )
+    assert [item.title for item in ascending] == [
+        "Low", "High", "Unrated A", "Unrated Z"
+    ]
+    assert [item.title for item in descending] == [
+        "High", "Low", "Unrated A", "Unrated Z"
+    ]
+
+
+def test_reverse_release_year_sort_preserves_unknown_year_at_bottom() -> None:
+    entries = [
+        entry("Unknown", 4, year=None),
+        entry("Old", 1, year=1980),
+        entry("New", 2, year=2026),
+        entry("Middle", 3, year=2005),
+    ]
+    assert [item.title for item in prepare_library_entries(
+        entries, sort_by="year", descending=False
+    )] == ["Old", "Middle", "New", "Unknown"]
+    assert [item.title for item in prepare_library_entries(
+        entries, sort_by="year", descending=True
+    )] == ["New", "Middle", "Old", "Unknown"]
+
+
+def test_reverse_title_and_recent_sorts() -> None:
+    entries = [
+        entry("Zulu", 1, updated_at="2026-01-01 00:00:00"),
+        entry("Alien", 2, updated_at="2026-02-01 00:00:00"),
+    ]
+    assert [item.title for item in prepare_library_entries(
+        entries, sort_by="title", descending=True
+    )] == ["Zulu", "Alien"]
+    assert [item.title for item in prepare_library_entries(
+        entries, sort_by="recent", descending=False
+    )] == ["Zulu", "Alien"]
+
+
+def test_original_default_sort_orders_unchanged() -> None:
+    entries = [entry("B", 2, year=2000), entry("A", 1, year=2026)]
+    totals = {("movie", 1): 80.0, ("movie", 2): 95.0}
+    assert [item.title for item in prepare_library_entries(
+        entries, sort_by="rating", ratings=totals
+    )] == ["B", "A"]
+    assert [item.title for item in prepare_library_entries(
+        entries, sort_by="title"
+    )] == ["A", "B"]
+    assert [item.title for item in prepare_library_entries(
+        entries, sort_by="year"
+    )] == ["A", "B"]

@@ -21,6 +21,7 @@ def prepare_library_entries(
     content_filter: LibraryContentFilter = "all",
     favourite_only: bool = False,
     sort_by: LibrarySort = "recent",
+    descending: bool | None = None,
     ratings: dict[tuple[MediaType, int], float] | None = None,
 ) -> list[MediaLibraryEntry]:
     """Filter and sort library entries for the desktop library view."""
@@ -35,30 +36,43 @@ def prepare_library_entries(
         and (not favourite_only or entry.favourite)
     ]
 
+    # Preserve existing defaults when older callers do not specify direction.
+    if descending is None:
+        descending = sort_by != "title"
+
     score_lookup = ratings or {}
     if sort_by == "rating":
-        return sorted(
-            filtered,
-            key=lambda entry: (
-                -score_lookup.get((entry.media_type, entry.tmdb_id), -1.0),
-                entry.title.casefold(),
-            ),
+        # Unrated items always appear last, regardless of sort direction.
+        rated = [
+            item for item in filtered if (item.media_type, item.tmdb_id) in score_lookup
+        ]
+        unrated = [
+            item for item in filtered if (item.media_type, item.tmdb_id) not in score_lookup
+        ]
+        rated.sort(key=lambda item: item.title.casefold())
+        rated.sort(
+            key=lambda item: score_lookup[(item.media_type, item.tmdb_id)],
+            reverse=descending,
         )
+        return rated + sorted(unrated, key=lambda item: item.title.casefold())
     if sort_by == "title":
-        return sorted(filtered, key=lambda entry: (entry.title.casefold(), entry.year or 0))
-    if sort_by == "year":
         return sorted(
-            filtered,
-            key=lambda entry: (-(entry.year or 0), entry.title.casefold()),
+            filtered, key=lambda item: (item.title.casefold(), item.year or 0),
+            reverse=descending,
         )
+    if sort_by == "year":
+        # Titles with unknown release dates should not appear before dated entries.
+        dated = [item for item in filtered if item.year is not None]
+        undated = [item for item in filtered if item.year is None]
+        dated.sort(key=lambda item: item.title.casefold())
+        dated.sort(key=lambda item: item.year, reverse=descending)
+        return dated + sorted(undated, key=lambda item: item.title.casefold())
     if sort_by != "recent":
         raise ValueError(f"Unknown library sort: {sort_by}")
 
-    return sorted(
-        filtered,
-        key=lambda entry: (entry.updated_at, entry.title.casefold()),
-        reverse=True,
-    )
+    filtered.sort(key=lambda item: item.title.casefold())
+    filtered.sort(key=lambda item: item.updated_at, reverse=descending)
+    return filtered
 
 
 def _matches_content_filter(

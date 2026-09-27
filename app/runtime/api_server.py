@@ -48,6 +48,7 @@ class EmbeddedApiServer:
             host=self.host,
             port=self.port,
             log_level="critical",
+            log_config=None,  # No console streams in PyInstaller's windowed executable.
             access_log=False,
             loop="asyncio",
             http="h11",

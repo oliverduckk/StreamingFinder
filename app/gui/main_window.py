@@ -1,6 +1,6 @@
 from collections.abc import Callable
 
-from PySide6.QtCore import QSize, Qt, QThreadPool, QTimer, QUrl, Slot
+from PySide6.QtCore import QSettings, QSize, Qt, QThreadPool, QTimer, QUrl, Slot
 from PySide6.QtGui import QIcon, QPixmap, QResizeEvent
 from PySide6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest
 from PySide6.QtWidgets import (
@@ -105,6 +105,7 @@ class MainWindow(QMainWindow):
         self._recommendations_dirty = True
         self._library_cards: list[QWidget] = []
         self._recommendation_cards: list[QWidget] = []
+        self._ui_settings = QSettings("StreamingFinder", "StreamingFinder")
         self._preference_refresh_timer = QTimer(self)
         self._preference_refresh_timer.setSingleShot(True)
         self._preference_refresh_timer.setInterval(250)
@@ -413,10 +414,24 @@ class MainWindow(QMainWindow):
         self.library_sort_combo = QComboBox()
         self.library_sort_combo.setObjectName("libraryFilter")
         self.library_sort_combo.addItem("Recently updated", "recent")
-        self.library_sort_combo.addItem("Highest rated", "rating")
-        self.library_sort_combo.addItem("Title A–Z", "title")
+        self.library_sort_combo.addItem("Rating", "rating")
+        self.library_sort_combo.addItem("Title", "title")
         self.library_sort_combo.addItem("Release year", "year")
-        self.library_sort_combo.currentIndexChanged.connect(self._refresh_library_view)
+        saved_sort = str(self._ui_settings.value("library/sort_by", "recent"))
+        saved_index = self.library_sort_combo.findData(saved_sort)
+        if saved_index >= 0:
+            self.library_sort_combo.setCurrentIndex(saved_index)
+        self.library_sort_descending = self._saved_library_sort_descending(
+            self.library_sort_combo.currentData() or "recent"
+        )
+        self.library_sort_combo.currentIndexChanged.connect(self._library_sort_changed)
+
+        # Separate direction control avoids duplicating each option in the dropdown.
+        self.library_sort_direction_button = QPushButton()
+        self.library_sort_direction_button.setObjectName("librarySortDirectionButton")
+        self.library_sort_direction_button.setFixedWidth(40)
+        self.library_sort_direction_button.clicked.connect(self._toggle_library_sort_direction)
+        self._update_library_sort_direction_button()
 
         self.library_favourites_filter = QCheckBox("Favourites only")
         self.library_favourites_filter.setObjectName("libraryFavouriteFilter")
@@ -426,6 +441,7 @@ class MainWindow(QMainWindow):
         filter_row.addWidget(self.library_status_filter)
         filter_row.addWidget(self.library_type_filter)
         filter_row.addWidget(self.library_sort_combo)
+        filter_row.addWidget(self.library_sort_direction_button)
         filter_row.addWidget(self.library_favourites_filter)
         toolbar_layout.addLayout(filter_row)
         layout.addWidget(toolbar)
@@ -1509,6 +1525,50 @@ class MainWindow(QMainWindow):
     def _finish_library_classification(self) -> None:
         self._library_classification_running = False
 
+    def _saved_library_sort_descending(self, sort_by: str) -> bool:
+        # Title defaults to A–Z; all other sorting modes default to newest/highest first.
+        return self._ui_settings.value(
+            f"library/sort_descending/{sort_by}", sort_by != "title", type=bool
+        )
+
+    def _library_sort_changed(self, *_args: object) -> None:
+        sort_by = self.library_sort_combo.currentData() or "recent"
+        self.library_sort_descending = self._saved_library_sort_descending(sort_by)
+        self._ui_settings.setValue("library/sort_by", sort_by)
+        self._update_library_sort_direction_button()
+        self._refresh_library_view()
+
+    def _toggle_library_sort_direction(self) -> None:
+        self.library_sort_descending = not self.library_sort_descending
+        sort_by = self.library_sort_combo.currentData() or "recent"
+        self._ui_settings.setValue(
+            f"library/sort_descending/{sort_by}", self.library_sort_descending
+        )
+        self._update_library_sort_direction_button()
+        self._refresh_library_view()
+
+    def _update_library_sort_direction_button(self) -> None:
+        sort_by = self.library_sort_combo.currentData() or "recent"
+        descriptions = {
+            "recent": ("Oldest updated first", "Newest updated first"),
+            "rating": ("Lowest rated first", "Highest rated first"),
+            "title": ("A–Z", "Z–A"),
+            "year": ("Oldest release first", "Newest release first"),
+        }
+        ascending_label, descending_label = descriptions[sort_by]
+        active_label = (
+            descending_label if self.library_sort_descending else ascending_label
+        )
+        self.library_sort_direction_button.setText(
+            "↓" if self.library_sort_descending else "↑"
+        )
+        self.library_sort_direction_button.setToolTip(
+            f"Currently: {active_label}. Click to reverse order."
+        )
+        self.library_sort_direction_button.setAccessibleName(
+            f"Reverse library sort order. Currently: {active_label}"
+        )
+
     def _refresh_library_view(self, *_args: object) -> None:
         if not hasattr(self, "library_grid"):
             return
@@ -1526,6 +1586,7 @@ class MainWindow(QMainWindow):
             content_filter=content_filter,
             favourite_only=self.library_favourites_filter.isChecked(),
             sort_by=sort_value,
+            descending=self.library_sort_descending,
             ratings=totals,
         )
 
